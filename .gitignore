@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 
-# generated per-ticker outputs
+# generated per-ticker and backtest outputs
 *_keltner.csv
 *_keltner.png
+keltner_backtest_results.csv
