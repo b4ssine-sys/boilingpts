@@ -1,12 +1,18 @@
 """Keltner Channel model with Bollinger-squeeze detection.
 
 Usage:
-    pip install yfinance pandas matplotlib
+    pip install yfinance pandas numpy matplotlib
     python keltner_model.py
 
 Outputs one CSV and one PNG per ticker, plus a console readout.
+
+Price data is split/dividend-adjusted at download (auto_adjust=True) so that
+corporate actions do not enter ATR or the Bollinger standard deviation as
+price shocks. All signal columns are computed causally: nothing on bar t is
+derived from data after bar t.
 """
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
@@ -18,6 +24,7 @@ ATR_LEN = 10         # Keltner band volatility
 KC_MULT = 2.0
 BB_LEN = 20          # Bollinger, for squeeze detection
 BB_MULT = 2.0
+BB_DDOF = 1          # sample estimator; Bollinger's original spec uses 0
 WARMUP = "9mo"       # extra history so EMA/ATR are seeded
 
 RSI_LEN = 14
@@ -27,28 +34,71 @@ DIV_LOOKBACK = 60    # max bars back when pairing swing lows
 TOUCH_LEVEL = 0.15   # kc_pos at or below this counts as a lower-band touch
 FWD_DAYS = 10        # forward return horizon for touch validation
 
+# Optional volatility-regime scaling of the Keltner multiplier. Off by default:
+# switching it on changes what kc_pos and TOUCH_LEVEL mean, so touch counts and
+# any thresholds calibrated against them have to be re-tuned.
+DYNAMIC_KC_MULT = False
+VOL_BASELINE_LEN = 100   # bars in the long-run volatility baseline
+VOL_DAMPING = 0.5        # 0 = static multiplier, 1 = full vol normalisation
+KC_MULT_BOUNDS = (1.5, 3.0)
+
+# Divergence verdict codes, kept as ints so the classifier stays vectorised.
+DIV_NONE, DIV_BULLISH, DIV_DOWN = 0, 1, 2
+
+
+def true_range(df: pd.DataFrame) -> pd.Series:
+    """max(H-L, |H-C_prev|, |L-C_prev|), evaluated directly in numpy."""
+    high = df["High"].to_numpy(dtype=float)
+    low = df["Low"].to_numpy(dtype=float)
+    close = df["Close"].to_numpy(dtype=float)
+    if len(close) == 0:
+        return pd.Series(dtype=float, index=df.index)
+
+    prior_close = np.empty_like(close)
+    prior_close[0] = np.nan
+    prior_close[1:] = close[:-1]
+
+    tr = np.maximum(
+        high - low,
+        np.maximum(np.abs(high - prior_close), np.abs(low - prior_close)),
+    )
+    # First bar has no prior close, so the high-low range is the whole story.
+    tr[0] = high[0] - low[0]
+    return pd.Series(tr, index=df.index)
+
 
 def average_true_range(df: pd.DataFrame, length: int) -> pd.Series:
-    prior_close = df["Close"].shift(1)
-    true_range = pd.concat(
-        [
-            df["High"] - df["Low"],
-            (df["High"] - prior_close).abs(),
-            (df["Low"] - prior_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return true_range.ewm(alpha=1 / length, adjust=False).mean()
+    return true_range(df).ewm(alpha=1 / length, adjust=False).mean()
+
+
+def keltner_multiplier(atr: pd.Series, close: pd.Series) -> pd.Series | float:
+    """Static KC_MULT, or one scaled against a long-run volatility baseline.
+
+    Bands already widen with ATR, so the multiplier only needs to absorb the
+    *regime* component: ATR elevated against its own baseline pulls the
+    multiplier down, a becalmed tape pushes it up, both damped and clamped.
+    A GARCH conditional-variance baseline would be the rigorous version of
+    this and needs the `arch` package; the ATR ratio is the cheap stand-in.
+    """
+    if not DYNAMIC_KC_MULT:
+        return KC_MULT
+    atr_pct = atr / close
+    baseline = atr_pct.rolling(VOL_BASELINE_LEN, min_periods=VOL_BASELINE_LEN // 2).mean()
+    ratio = (baseline / atr_pct).replace([np.inf, -np.inf], np.nan)
+    mult = KC_MULT * np.power(ratio, VOL_DAMPING)
+    return mult.clip(*KC_MULT_BOUNDS).fillna(KC_MULT)
 
 
 def keltner(df: pd.DataFrame) -> pd.DataFrame:
     mid = df["Close"].ewm(span=EMA_LEN, adjust=False).mean()
     atr = average_true_range(df, ATR_LEN)
+    mult = keltner_multiplier(atr, df["Close"])
     out = pd.DataFrame(index=df.index)
     out["close"] = df["Close"]
     out["kc_mid"] = mid
-    out["kc_upper"] = mid + KC_MULT * atr
-    out["kc_lower"] = mid - KC_MULT * atr
+    out["kc_mult"] = mult
+    out["kc_upper"] = mid + mult * atr
+    out["kc_lower"] = mid - mult * atr
     out["kc_width_pct"] = (out["kc_upper"] - out["kc_lower"]) / mid * 100
     # Position in channel: 0 = at lower band, 1 = at upper band
     out["kc_pos"] = (out["close"] - out["kc_lower"]) / (out["kc_upper"] - out["kc_lower"])
@@ -57,7 +107,7 @@ def keltner(df: pd.DataFrame) -> pd.DataFrame:
 
 def bollinger(df: pd.DataFrame) -> pd.DataFrame:
     mid = df["Close"].rolling(BB_LEN).mean()
-    sd = df["Close"].rolling(BB_LEN).std(ddof=0)
+    sd = df["Close"].rolling(BB_LEN).std(ddof=BB_DDOF)
     out = pd.DataFrame(index=df.index)
     out["bb_upper"] = mid + BB_MULT * sd
     out["bb_lower"] = mid - BB_MULT * sd
@@ -79,70 +129,129 @@ def macd(close: pd.Series) -> pd.DataFrame:
     return pd.DataFrame({"macd": line, "macd_signal": signal, "macd_hist": line - signal})
 
 
-def pivot_lows(low: pd.Series, bars: int) -> pd.Series:
-    """True where a bar is the lowest of the `bars` sessions either side of it."""
-    window = low.rolling(2 * bars + 1, center=True).min()
-    return (low == window) & low.notna()
+def confirmed_pivot_pos(low: pd.Series, bars: int) -> pd.Series:
+    """Position of the swing low *confirmed* on each bar, NaN where none is.
 
-
-def divergence_at(price: pd.Series, osc: pd.Series, pivots: pd.Series, end: int) -> str:
-    """Compare the two most recent swing lows confirmed on or before bar `end`.
-
-    A pivot at bar p is only knowable at p + PIVOT_BARS, so pivots that would
-    still be unconfirmed at `end` are excluded to keep the signal causal.
+    A bar is a swing low when it is the lowest of the `bars` sessions either
+    side of it, which cannot be known until `bars` sessions later. The centred
+    comparison is therefore shifted forward by `bars` so the series is indexed
+    by confirmation bar, not by pivot bar: reading it at bar t can only ever
+    surface pivots already visible at t. Callers get the pivot's integer
+    position, so no separate causality filter is needed downstream.
     """
-    confirmed = [
-        p for p in range(max(0, end - DIV_LOOKBACK), end + 1)
-        if pivots.iloc[p] and p + PIVOT_BARS <= end
-    ]
-    if len(confirmed) < 2:
-        return "none"
-    prev, last = confirmed[-2], confirmed[-1]
-    if price.iloc[last] >= price.iloc[prev]:
-        return "none"
+    window = low.rolling(2 * bars + 1, center=True).min()
+    is_pivot = (low == window) & low.notna()
+    position = pd.Series(np.arange(len(low), dtype=float), index=low.index)
+    return position.where(is_pivot).shift(bars)
+
+
+def divergence(price: pd.Series, osc: pd.Series, low: pd.Series) -> np.ndarray:
+    """Per-bar RSI-vs-price divergence code against the last two swing lows.
+
+    Vectorised equivalent of walking each bar and pairing its two most recent
+    confirmed pivots: forward-filling the confirmed-pivot positions gives the
+    latest pivot per bar, and forward-filling those positions shifted by one
+    within the sparse pivot series gives the one before it.
+    """
+    confirmed = confirmed_pivot_pos(low, PIVOT_BARS)
+    sparse = confirmed.dropna()
+
+    last_pos = confirmed.ffill().to_numpy(dtype=float)
+    prev_pos = (
+        sparse.shift(1).reindex(confirmed.index).ffill().to_numpy(dtype=float)
+    )
+
+    bar = np.arange(len(price), dtype=float)
+    # Both pivots must sit inside the lookback; prev is the older of the two.
+    valid = ~np.isnan(last_pos) & ~np.isnan(prev_pos) & (prev_pos >= bar - DIV_LOOKBACK)
+
+    last_i = np.where(valid, last_pos, 0).astype(np.intp)
+    prev_i = np.where(valid, prev_pos, 0).astype(np.intp)
+    price_v = price.to_numpy(dtype=float)
+    osc_v = osc.to_numpy(dtype=float)
+
+    lower_low = valid & (price_v[last_i] < price_v[prev_i])
     # Price made a lower low. Did momentum follow it down, or hold up?
-    return "bullish" if osc.iloc[last] > osc.iloc[prev] else "confirmed_down"
+    bullish = lower_low & (osc_v[last_i] > osc_v[prev_i])
+
+    return np.where(bullish, DIV_BULLISH, np.where(lower_low, DIV_DOWN, DIV_NONE))
 
 
-def classify_touch(model: pd.DataFrame, end: int) -> tuple[str, list[str]]:
-    """Gate a lower-band touch on momentum. Returns (verdict, reasons)."""
-    row, prior = model.iloc[end], model.iloc[end - 1]
-    reasons: list[str] = []
-    blocks = 0
+BLOCK_LABELS = {
+    "blk_div": "price and RSI both making lower lows",
+    "blk_macd_hist": "MACD histogram negative and still falling",
+    "blk_macd_signal": "MACD below its signal line",
+}
 
-    div = divergence_at(model["close"], model["rsi"], model["pivot_low"], end)
-    if div == "bullish":
-        reasons.append("bullish RSI divergence vs prior swing low")
-    elif div == "confirmed_down":
-        reasons.append("price and RSI both making lower lows")
-        blocks += 1
 
-    if row["macd_hist"] < 0 and row["macd_hist"] < prior["macd_hist"]:
-        reasons.append("MACD histogram negative and still falling")
-        blocks += 1
-    if row["macd"] < row["macd_signal"]:
-        reasons.append("MACD below its signal line")
-        blocks += 1
-    if row["rsi"] < 40 and row["rsi"] < prior["rsi"]:
-        reasons.append(f"RSI {row['rsi']:.0f} and falling")
-        blocks += 1
+def classify_touches(model: pd.DataFrame) -> pd.DataFrame:
+    """Gate every lower-band touch on momentum, in one vectorised pass.
 
-    # A real divergent bottom almost always still has MACD under its signal line,
-    # so divergence is allowed to outrank one blocking condition but not two.
-    if div == "bullish" and blocks <= 1:
-        return "MOMENTUM OK", reasons
-    if blocks >= 2:
-        return "STAND ASIDE", reasons
-    return "MARGINAL", reasons
+    Adds the individual blocking conditions as columns so the verdict can be
+    audited bar by bar, then reduces them to a verdict with np.select.
+    """
+    div = model["divergence"].to_numpy()
+    macd_hist = model["macd_hist"]
+    rsi_now = model["rsi"]
+
+    out = pd.DataFrame(index=model.index)
+    out["blk_div"] = div == DIV_DOWN
+    out["blk_macd_hist"] = (macd_hist < 0) & (macd_hist < macd_hist.shift(1))
+    out["blk_macd_signal"] = model["macd"] < model["macd_signal"]
+    out["blk_rsi"] = (rsi_now < 40) & (rsi_now < rsi_now.shift(1))
+    blocks = out[list(BLOCK_LABELS) + ["blk_rsi"]].sum(axis=1).to_numpy()
+
+    # The first bar has no prior bar to compare momentum against.
+    scored = model["touch"].to_numpy() & (np.arange(len(model)) > 0)
+
+    # A real divergent bottom almost always still has MACD under its signal
+    # line, so divergence outranks one blocking condition but not two.
+    verdict = np.select(
+        [(div == DIV_BULLISH) & (blocks <= 1), blocks >= 2],
+        ["MOMENTUM OK", "STAND ASIDE"],
+        default="MARGINAL",
+    )
+    out["touch_verdict"] = np.where(scored, verdict, "")
+    out["touch_notes"] = touch_notes(out, div, rsi_now.to_numpy(), scored)
+    return out
+
+
+def touch_notes(flags: pd.DataFrame, div: np.ndarray, rsi_v: np.ndarray,
+                scored: np.ndarray) -> list[str]:
+    """Human-readable reasons, built only for the handful of scored bars."""
+    notes = [""] * len(flags)
+    columns = {name: flags[name].to_numpy() for name in BLOCK_LABELS}
+    blk_rsi = flags["blk_rsi"].to_numpy()
+
+    for i in np.flatnonzero(scored):
+        reasons = []
+        if div[i] == DIV_BULLISH:
+            reasons.append("bullish RSI divergence vs prior swing low")
+        for name, label in BLOCK_LABELS.items():
+            if columns[name][i]:
+                reasons.append(label)
+        if blk_rsi[i]:
+            reasons.append(f"RSI {rsi_v[i]:.0f} and falling")
+        notes[i] = "; ".join(reasons)
+    return notes
 
 
 def build(ticker: str) -> pd.DataFrame:
-    df = yf.download(ticker, period=WARMUP, auto_adjust=False, progress=False)
+    # auto_adjust=True returns split/dividend-adjusted OHLC, so High, Low and
+    # Close stay on one consistent basis. Adjusting Close alone would leave ATR
+    # mixing adjusted and raw prices.
+    df = yf.download(ticker, period=WARMUP, auto_adjust=True, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    if df.empty:
+        raise RuntimeError(
+            f"no price data returned for {ticker!r} — check the symbol and "
+            f"network access to Yahoo Finance"
+        )
+
     model = keltner(df).join(bollinger(df)).join(macd(df["Close"]))
     model["rsi"] = rsi(df["Close"], RSI_LEN)
-    model["pivot_low"] = pivot_lows(df["Low"], PIVOT_BARS)
+    model["divergence"] = divergence(model["close"], model["rsi"], df["Low"])
     # Squeeze: Bollinger bands compressed inside the Keltner Channel
     model["squeeze"] = (model["bb_upper"] < model["kc_upper"]) & (
         model["bb_lower"] > model["kc_lower"]
@@ -152,27 +261,15 @@ def build(ticker: str) -> pd.DataFrame:
     model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["close"] * 100 - 100
 
     # Classify on the full history so divergence has swing lows to pair with
-    verdicts, notes = [], []
-    for i in range(len(model)):
-        if i > 0 and model["touch"].iloc[i]:
-            verdict, reasons = classify_touch(model, i)
-        else:
-            verdict, reasons = "", []
-        verdicts.append(verdict)
-        notes.append("; ".join(reasons))
-    model["touch_verdict"] = verdicts
-    model["touch_notes"] = notes
+    model = model.join(classify_touches(model))
 
     return model.tail(WINDOW).round(4)
 
 
 def consecutive_true(series: pd.Series) -> int:
-    count = 0
-    for value in reversed(series.tolist()):
-        if not value:
-            break
-        count += 1
-    return count
+    values = series.to_numpy(dtype=bool)
+    falses = np.flatnonzero(~values)
+    return len(values) if falses.size == 0 else len(values) - falses[-1] - 1
 
 
 def readout(ticker: str, model: pd.DataFrame) -> None:
@@ -186,6 +283,8 @@ def readout(ticker: str, model: pd.DataFrame) -> None:
     print(f"Upper / Mid / Lo {last['kc_upper']:.2f} / {last['kc_mid']:.2f} / {last['kc_lower']:.2f}")
     print(f"Channel position {last['kc_pos']:.2f}  (0 = lower band, 1 = upper band)")
     print(f"Channel width    {last['kc_width_pct']:.2f}%  ({width_pctile:.0f}th pctile of window)")
+    if DYNAMIC_KC_MULT:
+        print(f"KC multiplier    {last['kc_mult']:.2f}x  (vol-scaled, static base {KC_MULT}x)")
     print(f"EMA{EMA_LEN} slope (10d) {mid_slope:+.2f}  -> trend {trend}")
     print(f"Squeeze          {'ON' if last['squeeze'] else 'off'}"
           f"  ({consecutive_true(model['squeeze'])} consecutive days)")
@@ -203,13 +302,17 @@ def readout(ticker: str, model: pd.DataFrame) -> None:
         print("Lower-band touches: none in window")
         return
     print(f"\nLower-band touches (kc_pos <= {TOUCH_LEVEL}):")
-    for date, row in touches.iterrows():
-        fwd = row["fwd_ret_pct"]
+    for date, pos, verdict, fwd, note in zip(
+        touches.index,
+        touches["kc_pos"].to_numpy(),
+        touches["touch_verdict"].to_numpy(),
+        touches["fwd_ret_pct"].to_numpy(),
+        touches["touch_notes"].to_numpy(),
+    ):
         fwd_txt = "n/a" if pd.isna(fwd) else f"{fwd:+.2f}%"
-        print(f"  {date.date()}  pos {row['kc_pos']:.2f}  {row['touch_verdict']:<12}"
-              f"  fwd{FWD_DAYS}d {fwd_txt}")
-        if row["touch_notes"]:
-            print(f"                {row['touch_notes']}")
+        print(f"  {date.date()}  pos {pos:.2f}  {verdict:<12}  fwd{FWD_DAYS}d {fwd_txt}")
+        if note:
+            print(f"                {note}")
 
     scored = touches.dropna(subset=["fwd_ret_pct"])
     if not scored.empty:
@@ -229,7 +332,8 @@ def plot(ticker: str, model: pd.DataFrame) -> None:
     ax.plot(model.index, model["close"], color="black", lw=1.4, label="Close")
     ax.plot(model.index, model["kc_mid"], color="steelblue", lw=1, label=f"EMA{EMA_LEN}")
     ax.plot(model.index, model["kc_upper"], color="crimson", lw=1, ls="--")
-    ax.plot(model.index, model["kc_lower"], color="crimson", lw=1, ls="--", label="Keltner ±2 ATR")
+    band_label = "Keltner (vol-scaled)" if DYNAMIC_KC_MULT else f"Keltner ±{KC_MULT:g} ATR"
+    ax.plot(model.index, model["kc_lower"], color="crimson", lw=1, ls="--", label=band_label)
     ax.fill_between(model.index, model["kc_lower"], model["kc_upper"], color="crimson", alpha=0.06)
     squeeze_days = model.index[model["squeeze"]]
     ax.scatter(squeeze_days, model.loc[squeeze_days, "kc_lower"],
@@ -239,7 +343,7 @@ def plot(ticker: str, model: pd.DataFrame) -> None:
         if len(days):
             ax.scatter(days, model.loc[days, "close"], marker="o", s=70,
                        facecolors="none", edgecolors=color, lw=2, label=verdict, zorder=6)
-    ax.set_title(f"{ticker} — Keltner ({EMA_LEN} EMA, {ATR_LEN} ATR, {KC_MULT}x) with momentum gate")
+    ax.set_title(f"{ticker} — Keltner ({EMA_LEN} EMA, {ATR_LEN} ATR) with momentum gate")
     ax.legend(loc="upper left", fontsize=8, ncol=2)
     ax.grid(alpha=0.25)
 

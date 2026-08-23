@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# generated per-ticker outputs
+*_keltner.csv
+*_keltner.png
