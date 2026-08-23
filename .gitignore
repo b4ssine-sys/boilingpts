@@ -7,3 +7,4 @@ venv/
 *_keltner.csv
 *_keltner.png
 keltner_backtest_results.csv
+GSPC_raw.csv
