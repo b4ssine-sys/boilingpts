@@ -375,5 +375,81 @@ def main() -> None:
     print("\nSaved CSV and PNG per ticker in the working directory.")
 
 
+# =============================================================================
+# BACKTEST EXECUTION
+# =============================================================================
+def _build_from_frame(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Same pipeline as build(), but takes an already-downloaded single-ticker frame."""
+    if df.empty:
+        raise RuntimeError(f"no price data for {ticker!r}")
+    model = keltner(df).join(bollinger(df)).join(macd(df["Close"]))
+    model["rsi"] = rsi(df["Close"], RSI_LEN)
+    model["divergence"] = divergence(model["close"], model["rsi"], df["Low"])
+    model["squeeze"] = (model["bb_upper"] < model["kc_upper"]) & (
+        model["bb_lower"] > model["kc_lower"]
+    )
+    model["touch"] = model["kc_pos"] <= TOUCH_LEVEL
+    model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["close"] * 100 - 100
+    model = model.join(classify_touches(model))
+    return model
+
+
+def run_backtest() -> pd.DataFrame:
+    print(f"Downloading data for {len(TICKERS)} tickers...")
+    raw_df = yf.download(TICKERS, period=WARMUP, auto_adjust=True, progress=False)
+
+    if isinstance(raw_df.columns, pd.MultiIndex):
+        ticker_level = raw_df.columns.names.index("Ticker") if "Ticker" in raw_df.columns.names else 1
+    else:
+        ticker_level = None
+
+    pieces = []
+    for ticker in TICKERS:
+        if ticker_level is not None:
+            df = raw_df.xs(ticker, level=ticker_level, axis=1).dropna(how="all")
+        else:
+            df = raw_df.copy()
+        if df.empty:
+            print(f"  WARNING: no data for {ticker}, skipping")
+            continue
+        model = _build_from_frame(ticker, df)
+        model["Ticker"] = ticker
+        pieces.append(model)
+
+    if not pieces:
+        raise RuntimeError("no data returned for any ticker")
+
+    model = pd.concat(pieces)
+    model = model.set_index("Ticker", append=True).reorder_levels(["Date", "Ticker"]).sort_index()
+
+    print("\n========================================================")
+    print("                 BACKTEST RESULTS")
+    print("========================================================")
+
+    entries = model[model["touch_verdict"] == "MOMENTUM OK"].dropna(subset=["fwd_ret_pct"])
+
+    if len(entries) == 0:
+        print("No valid 'MOMENTUM OK' signals found in the dataset.")
+        return model
+
+    win_rate = (entries["fwd_ret_pct"] > 0).mean() * 100
+    avg_return = entries["fwd_ret_pct"].mean()
+
+    print(f"Total Valid Signals:    {len(entries)}")
+    print(f"Forward Return Horizon: {FWD_DAYS} days")
+    print(f"Overall Win Rate:       {win_rate:.2f}%")
+    print(f"Average Expected Return:{avg_return:+.2f}%\n")
+
+    print("--- Breakdown by Ticker ---")
+    ticker_stats = entries.groupby("Ticker")["fwd_ret_pct"].agg(
+        Trades="count",
+        Win_Rate_Pct=lambda x: (x > 0).mean() * 100,
+        Avg_Return_Pct="mean",
+    )
+    print(ticker_stats.round(2))
+
+    return model
+
+
 if __name__ == "__main__":
     main()
