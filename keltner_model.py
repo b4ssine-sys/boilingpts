@@ -11,7 +11,7 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 
-TICKERS = ["VOO", "QQQM"]
+TICKERS = ["VOO", "QQQ"]
 WINDOW = 60          # trading days to report
 EMA_LEN = 20         # Keltner midline
 ATR_LEN = 10         # Keltner band volatility
