@@ -140,12 +140,13 @@ def macd(close: pd.Series) -> pd.DataFrame:
     return pd.DataFrame({"macd": line, "macd_signal": signal, "macd_hist": line - signal})
 
 
-def pain_index(close: pd.Series) -> pd.DataFrame:
-    """Worst unrealized loss over the next N days after each bar."""
+def pain_index(close: pd.Series, open_price: pd.Series) -> pd.DataFrame:
+    """Worst unrealized loss over the next N days, measured from next-day open."""
+    entry = open_price.shift(-1)
     out = {}
     for h in PAIN_HORIZONS:
         shifts = pd.concat([close.shift(-k) for k in range(1, h + 1)], axis=1)
-        out[f"pain_{h}d_pct"] = (shifts.min(axis=1) / close - 1) * 100
+        out[f"pain_{h}d_pct"] = (shifts.min(axis=1) / entry - 1) * 100
     return pd.DataFrame(out, index=close.index)
 
 
@@ -286,13 +287,14 @@ def build(ticker: str) -> pd.DataFrame:
         model["bb_lower"] > model["kc_lower"]
     )
     model["touch"] = model["kc_pos"] <= TOUCH_LEVEL
-    # Forward return is for validating the gate after the fact, never an input
-    model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["close"] * 100 - 100
+    model["open"] = df["Open"]
+    # Entry at next-day open; exit at close of t+FWD_DAYS
+    model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["open"].shift(-1) * 100 - 100
 
     # Classify on the full history so divergence has swing lows to pair with
     model = model.join(classify_touches(model))
     model["regime"] = regime(df["Close"])
-    model = model.join(pain_index(model["close"]))
+    model = model.join(pain_index(model["close"], df["Open"]))
     model = model.join(execution_discount(df))
 
     return model.tail(WINDOW).round(4)
@@ -427,10 +429,11 @@ def _build_from_frame(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
         model["bb_lower"] > model["kc_lower"]
     )
     model["touch"] = model["kc_pos"] <= TOUCH_LEVEL
-    model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["close"] * 100 - 100
+    model["open"] = df["Open"]
+    model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["open"].shift(-1) * 100 - 100
     model = model.join(classify_touches(model))
     model["regime"] = regime(df["Close"])
-    model = model.join(pain_index(model["close"]))
+    model = model.join(pain_index(model["close"], df["Open"]))
     model = model.join(execution_discount(df))
     return model
 
@@ -438,15 +441,30 @@ def _build_from_frame(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # PORTFOLIO ANALYTICS
 # =============================================================================
-def _strategy_active(model: pd.DataFrame) -> np.ndarray:
-    """Boolean mask: True on days the strategy is invested (FWD_DAYS after each signal)."""
+def _strategy_returns(model: pd.DataFrame) -> np.ndarray:
+    """Daily return series: open-entry on signal+1, close-to-close thereafter, 0 when idle."""
+    close = model["close"].to_numpy()
+    open_p = model["open"].to_numpy()
+    n = len(model)
+
+    cc_ret = np.zeros(n)
+    cc_ret[1:] = close[1:] / close[:-1] - 1
+
+    oc_ret = np.zeros(n)
+    oc_ret[1:] = (close[1:] - open_p[1:]) / open_p[1:]
+
     signals = (model["touch_verdict"] == "MOMENTUM OK").to_numpy()
-    active = np.zeros(len(model), dtype=bool)
+    active = np.zeros(n, dtype=bool)
+    first_day = np.zeros(n, dtype=bool)
     for i in np.flatnonzero(signals):
-        start = i + 1
-        end = min(i + FWD_DAYS + 1, len(model))
-        active[start:end] = True
-    return active
+        entry = i + 1
+        end = min(i + FWD_DAYS + 1, n)
+        if entry < n and not active[entry]:
+            first_day[entry] = True
+        active[entry:end] = True
+
+    ret = np.where(first_day, oc_ret, cc_ret)
+    return ret * active
 
 
 def _max_drawdown(equity: np.ndarray) -> float:
@@ -548,8 +566,7 @@ def performance_report(model: pd.DataFrame) -> None:
         t_model = model.xs(ticker, level="Ticker")
         daily_ret = t_model["close"].pct_change().to_numpy()
         daily_ret = np.nan_to_num(daily_ret, nan=0.0)
-        active = _strategy_active(t_model)
-        strat_ret = daily_ret * active
+        strat_ret = _strategy_returns(t_model)
 
         strat_eq = np.cumprod(1 + strat_ret)
         bh_eq = np.cumprod(1 + daily_ret)
