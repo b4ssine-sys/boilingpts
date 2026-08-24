@@ -42,6 +42,10 @@ VOL_BASELINE_LEN = 100   # bars in the long-run volatility baseline
 VOL_DAMPING = 0.5        # 0 = static multiplier, 1 = full vol normalisation
 KC_MULT_BOUNDS = (1.5, 3.0)
 
+PAIN_HORIZONS = (5, 10, 30)   # forward drawdown horizons for pain index
+REGIME_FAST = 50              # fast EMA for bull/bear regime detection
+REGIME_SLOW = 200             # slow EMA for regime detection
+
 # Divergence verdict codes, kept as ints so the classifier stays vectorised.
 DIV_NONE, DIV_BULLISH, DIV_DOWN = 0, 1, 2
 
@@ -114,6 +118,13 @@ def bollinger(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def regime(close: pd.Series) -> pd.Series:
+    """BULL when fast EMA > slow EMA, BEAR otherwise."""
+    fast = close.ewm(span=REGIME_FAST, adjust=False).mean()
+    slow = close.ewm(span=REGIME_SLOW, adjust=False).mean()
+    return pd.Series(np.where(fast >= slow, "BULL", "BEAR"), index=close.index)
+
+
 def rsi(close: pd.Series, length: int) -> pd.Series:
     delta = close.diff()
     avg_gain = delta.clip(lower=0).ewm(alpha=1 / length, adjust=False).mean()
@@ -127,6 +138,24 @@ def macd(close: pd.Series) -> pd.DataFrame:
             - close.ewm(span=MACD_SLOW, adjust=False).mean())
     signal = line.ewm(span=MACD_SIGNAL, adjust=False).mean()
     return pd.DataFrame({"macd": line, "macd_signal": signal, "macd_hist": line - signal})
+
+
+def pain_index(close: pd.Series) -> pd.DataFrame:
+    """Worst unrealized loss over the next N days after each bar."""
+    out = {}
+    for h in PAIN_HORIZONS:
+        shifts = pd.concat([close.shift(-k) for k in range(1, h + 1)], axis=1)
+        out[f"pain_{h}d_pct"] = (shifts.min(axis=1) / close - 1) * 100
+    return pd.DataFrame(out, index=close.index)
+
+
+def execution_discount(df: pd.DataFrame) -> pd.DataFrame:
+    """How much buying at close beats open and typical price on down days."""
+    typical = (df["High"] + df["Low"] + df["Close"]) / 3
+    out = pd.DataFrame(index=df.index)
+    out["exec_vs_open_pct"] = (df["Open"] - df["Close"]) / df["Open"] * 100
+    out["exec_vs_typical_pct"] = (typical - df["Close"]) / typical * 100
+    return out
 
 
 def confirmed_pivot_pos(low: pd.Series, bars: int) -> pd.Series:
@@ -262,8 +291,15 @@ def build(ticker: str) -> pd.DataFrame:
 
     # Classify on the full history so divergence has swing lows to pair with
     model = model.join(classify_touches(model))
+    model["regime"] = regime(df["Close"])
+    model = model.join(pain_index(model["close"]))
+    model = model.join(execution_discount(df))
 
     return model.tail(WINDOW).round(4)
+
+
+def _format_ratio(v: float) -> str:
+    return "inf" if np.isinf(v) else f"{v:.2f}"
 
 
 def consecutive_true(series: pd.Series) -> int:
@@ -296,6 +332,8 @@ def readout(ticker: str, model: pd.DataFrame) -> None:
     print(f"RSI({RSI_LEN})          {last['rsi']:.1f}")
     print(f"MACD hist        {last['macd_hist']:+.3f} ({hist_dir}),"
           f" line {'above' if last['macd'] > last['macd_signal'] else 'below'} signal")
+    if "regime" in model.columns:
+        print(f"Regime           {last['regime']}  ({REGIME_FAST}/{REGIME_SLOW} EMA cross)")
 
     touches = model[model["touch"]]
     if touches.empty:
@@ -391,7 +429,171 @@ def _build_from_frame(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
     model["touch"] = model["kc_pos"] <= TOUCH_LEVEL
     model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["close"] * 100 - 100
     model = model.join(classify_touches(model))
+    model["regime"] = regime(df["Close"])
+    model = model.join(pain_index(model["close"]))
+    model = model.join(execution_discount(df))
     return model
+
+
+# =============================================================================
+# PORTFOLIO ANALYTICS
+# =============================================================================
+def _strategy_active(model: pd.DataFrame) -> np.ndarray:
+    """Boolean mask: True on days the strategy is invested (FWD_DAYS after each signal)."""
+    signals = (model["touch_verdict"] == "MOMENTUM OK").to_numpy()
+    active = np.zeros(len(model), dtype=bool)
+    for i in np.flatnonzero(signals):
+        start = i + 1
+        end = min(i + FWD_DAYS + 1, len(model))
+        active[start:end] = True
+    return active
+
+
+def _max_drawdown(equity: np.ndarray) -> float:
+    peak = np.maximum.accumulate(equity)
+    dd = (equity - peak) / peak * 100
+    return float(np.nanmin(dd))
+
+
+def _sharpe(returns: np.ndarray) -> float:
+    s = np.std(returns)
+    if s == 0:
+        return 0.0
+    return float(np.mean(returns) / s * np.sqrt(252))
+
+
+def _sortino(returns: np.ndarray) -> float:
+    downside = returns[returns < 0]
+    if len(downside) == 0:
+        return float("inf") if np.mean(returns) > 0 else 0.0
+    ds = np.std(downside)
+    if ds == 0:
+        return float("inf") if np.mean(returns) > 0 else 0.0
+    return float(np.mean(returns) / ds * np.sqrt(252))
+
+
+def _recovery_factor(equity: np.ndarray) -> float:
+    total_ret = (equity[-1] / equity[0] - 1) * 100
+    mdd = abs(_max_drawdown(equity))
+    return total_ret / mdd if mdd > 0 else float("inf")
+
+
+def _max_idle_streak(t_model: pd.DataFrame) -> int:
+    """Max consecutive sessions in BULL regime without a MOMENTUM OK signal."""
+    bull = (t_model["regime"] == "BULL").to_numpy()
+    sig = (t_model["touch_verdict"] == "MOMENTUM OK").to_numpy()
+    idle = bull & ~sig
+    if not idle.any():
+        return 0
+    groups = np.cumsum(~idle)
+    return int(pd.Series(idle).groupby(groups).sum().max())
+
+
+def performance_report(model: pd.DataFrame) -> None:
+    """Print execution, risk, and regime analytics for the full backtest."""
+    entries = model[model["touch_verdict"] == "MOMENTUM OK"]
+    scored = entries.dropna(subset=["fwd_ret_pct"])
+
+    if scored.empty:
+        print("\nNo scored MOMENTUM OK signals for analytics.")
+        return
+
+    tickers = model.index.get_level_values("Ticker").unique()
+
+    print("\n========================================================")
+    print("            PERFORMANCE ANALYTICS")
+    print("========================================================")
+
+    # --- Signal Frequency & Distribution ---
+    dates = model.index.get_level_values("Date")
+    date_range_days = (dates.max() - dates.min()).days
+    years = max(date_range_days / 365.25, 0.01)
+    n_signals = len(entries)
+    signal_dates = entries.index.get_level_values("Date").unique().sort_values()
+    avg_gap = float("nan")
+    if len(signal_dates) > 1:
+        avg_gap = signal_dates.to_series().diff().dt.days.mean()
+
+    print(f"\n--- Signal Frequency & Distribution ---")
+    print(f"  Total MOMENTUM OK signals:  {n_signals}")
+    print(f"  Approx signals/year:        {n_signals / years:.1f}")
+    if not np.isnan(avg_gap):
+        print(f"  Avg gap between signals:    {avg_gap:.0f} days")
+    print(f"  Per-ticker:")
+    for ticker in tickers:
+        n = len(entries.xs(ticker, level="Ticker"))
+        print(f"    {ticker}: {n} signals ({n / years:.1f}/yr)")
+
+    # --- Execution Quality ---
+    if "exec_vs_open_pct" in entries.columns:
+        avg_vs_open = entries["exec_vs_open_pct"].mean()
+        avg_vs_typ = entries["exec_vs_typical_pct"].mean()
+        print(f"\n--- Execution Quality (signal days only) ---")
+        print(f"  Avg discount vs Open:    {avg_vs_open:+.2f}%  (positive = bought cheaper)")
+        print(f"  Avg discount vs Typical: {avg_vs_typ:+.2f}%")
+
+    # --- Consecutive Idle in Bull ---
+    print(f"\n--- Consecutive Idle Days (BULL regime, no signal) ---")
+    for ticker in tickers:
+        t_model = model.xs(ticker, level="Ticker")
+        streak = _max_idle_streak(t_model)
+        print(f"  {ticker}: {streak} consecutive days")
+
+    # --- Risk-Adjusted Returns ---
+    print(f"\n--- Risk-Adjusted Returns ({FWD_DAYS}d hold vs buy-and-hold) ---")
+    header = (f"  {'Ticker':<7} {'Sharpe':>7} {'Sortino':>8} {'MaxDD':>8} {'Recovery':>9}"
+              f"  |  {'BH Shrp':>8} {'BH Sort':>8} {'BH MDD':>8} {'BH Rec':>7}")
+    print(header)
+    for ticker in tickers:
+        t_model = model.xs(ticker, level="Ticker")
+        daily_ret = t_model["close"].pct_change().to_numpy()
+        daily_ret = np.nan_to_num(daily_ret, nan=0.0)
+        active = _strategy_active(t_model)
+        strat_ret = daily_ret * active
+
+        strat_eq = np.cumprod(1 + strat_ret)
+        bh_eq = np.cumprod(1 + daily_ret)
+
+        s_sh = _sharpe(strat_ret)
+        s_so = _sortino(strat_ret)
+        s_mdd = _max_drawdown(strat_eq)
+        s_rec = _recovery_factor(strat_eq)
+
+        b_sh = _sharpe(daily_ret)
+        b_so = _sortino(daily_ret)
+        b_mdd = _max_drawdown(bh_eq)
+        b_rec = _recovery_factor(bh_eq)
+
+        print(f"  {ticker:<7} {_format_ratio(s_sh):>7} {_format_ratio(s_so):>8} {s_mdd:>7.2f}%"
+              f" {_format_ratio(s_rec):>9}"
+              f"  |  {_format_ratio(b_sh):>8} {_format_ratio(b_so):>8} {b_mdd:>7.2f}%"
+              f" {_format_ratio(b_rec):>7}")
+
+    # --- Post-Entry Drawdown (Pain Index) ---
+    pain_cols = [f"pain_{h}d_pct" for h in PAIN_HORIZONS if f"pain_{h}d_pct" in scored.columns]
+    if pain_cols:
+        print(f"\n--- Post-Entry Drawdown / Pain Index (MOMENTUM OK entries) ---")
+        for col in pain_cols:
+            vals = scored[col].dropna()
+            if not vals.empty:
+                horizon = col.split("_")[1]
+                print(f"  Worst {horizon:>3}:  avg {vals.mean():+.2f}%  "
+                      f"worst {vals.min():+.2f}%  "
+                      f"median {vals.median():+.2f}%")
+
+    # --- Hit Rate by Regime ---
+    if "regime" in scored.columns:
+        print(f"\n--- Hit Rate by Regime ({REGIME_FAST}/{REGIME_SLOW} EMA cross) ---")
+        print(f"  {'Regime':<7} {'Trades':>7} {'Win Rate':>10} {'Avg Ret':>9} {'Avg Pain5d':>11}")
+        for reg in ("BULL", "BEAR"):
+            group = scored[scored["regime"] == reg]
+            if group.empty:
+                continue
+            wr = (group["fwd_ret_pct"] > 0).mean() * 100
+            ar = group["fwd_ret_pct"].mean()
+            pain = group["pain_5d_pct"].mean() if "pain_5d_pct" in group.columns else float("nan")
+            pain_s = f"{pain:+.2f}%" if not np.isnan(pain) else "n/a"
+            print(f"  {reg:<7} {len(group):>7} {wr:>9.1f}% {ar:>+8.2f}% {pain_s:>11}")
 
 
 def run_backtest() -> pd.DataFrame:
@@ -447,6 +649,8 @@ def run_backtest() -> pd.DataFrame:
         Avg_Return_Pct="mean",
     )
     print(ticker_stats.round(2))
+
+    performance_report(model)
 
     return model
 
