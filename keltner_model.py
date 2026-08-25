@@ -556,6 +556,7 @@ def main(csv_path: str | None = None, ticker_override: str | None = None) -> Non
         ticker = ticker_override or csv_path.rsplit("/", 1)[-1].split(".")[0].upper()
         print(f"Loading data from {csv_path} (ticker: {ticker})...")
         model = build_from_csv(csv_path, ticker=ticker, breadth=breadth)
+        model["Ticker"] = ticker
         model.to_csv(f"{ticker}_keltner.csv")
         readout(ticker, model)
         plot(ticker, model)
@@ -676,18 +677,26 @@ def performance_report(model: pd.DataFrame) -> None:
         print("\nNo scored entry signals for analytics.")
         return
 
-    tickers = model.index.get_level_values("Ticker").unique()
+    multi = isinstance(model.index, pd.MultiIndex) and "Ticker" in model.index.names
+    if multi:
+        tickers = model.index.get_level_values("Ticker").unique().tolist()
+    else:
+        tickers = [model["Ticker"].iloc[0]] if "Ticker" in model.columns else ["CSV"]
+
+    def _slice(df, ticker):
+        return df.xs(ticker, level="Ticker") if multi else df
 
     print("\n========================================================")
     print("            PERFORMANCE ANALYTICS")
     print("========================================================")
 
     # --- Signal Frequency & Distribution ---
-    dates = model.index.get_level_values("Date")
+    dates = model.index.get_level_values("Date") if multi else model.index
     date_range_days = (dates.max() - dates.min()).days
     years = max(date_range_days / 365.25, 0.01)
     n_signals = len(entries)
-    signal_dates = entries.index.get_level_values("Date").unique().sort_values()
+    signal_dates = (entries.index.get_level_values("Date") if multi
+                    else entries.index).unique().sort_values()
     avg_gap = float("nan")
     if len(signal_dates) > 1:
         avg_gap = signal_dates.to_series().diff().dt.days.mean()
@@ -699,7 +708,7 @@ def performance_report(model: pd.DataFrame) -> None:
         print(f"  Avg gap between signals:    {avg_gap:.0f} days")
     print(f"  Per-ticker:")
     for ticker in tickers:
-        t_entries = entries.xs(ticker, level="Ticker")
+        t_entries = _slice(entries, ticker)
         n = len(t_entries)
         by_verdict = t_entries["touch_verdict"].value_counts()
         parts = ", ".join(f"{v}: {c}" for v, c in by_verdict.items())
@@ -716,7 +725,7 @@ def performance_report(model: pd.DataFrame) -> None:
     # --- Consecutive Idle in Bull ---
     print(f"\n--- Consecutive Idle Days (BULL regime, no entry signal) ---")
     for ticker in tickers:
-        t_model = model.xs(ticker, level="Ticker")
+        t_model = _slice(model, ticker)
         streak = _max_idle_streak(t_model)
         print(f"  {ticker}: {streak} consecutive days")
 
@@ -726,7 +735,7 @@ def performance_report(model: pd.DataFrame) -> None:
               f"  |  {'BH Shrp':>8} {'BH Sort':>8} {'BH MDD':>8} {'BH Rec':>7}")
     print(header)
     for ticker in tickers:
-        t_model = model.xs(ticker, level="Ticker")
+        t_model = _slice(model, ticker)
         daily_ret = t_model["close"].pct_change().to_numpy()
         daily_ret = np.nan_to_num(daily_ret, nan=0.0)
         strat_ret = _strategy_returns(t_model)
