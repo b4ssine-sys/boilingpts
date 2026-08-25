@@ -407,7 +407,7 @@ def load_csv(path: str) -> pd.DataFrame:
             col_map[col] = "High"
         elif lc == "low":
             col_map[col] = "Low"
-        elif lc in ("close", "adj close", "adj_close", "adjusted close"):
+        elif lc in ("close", "close/last", "adj close", "adj_close", "adjusted close"):
             col_map[col] = "Close"
         elif lc == "volume":
             col_map[col] = "Volume"
@@ -421,6 +421,10 @@ def load_csv(path: str) -> pd.DataFrame:
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.set_index("Date").sort_index()
     df = df[~df.index.duplicated(keep="last")]
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        if col in df.columns and df[col].dtype == object:
+            df[col] = df[col].str.replace(r"[\$,\s]", "", regex=True)
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
@@ -847,7 +851,7 @@ def run_backtest() -> pd.DataFrame:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Keltner Channel model")
-    parser.add_argument("--csv", metavar="FILE",
+    parser.add_argument("csv_file", nargs="?", default=None,
                         help="path to a local OHLCV CSV file (bypasses Yahoo Finance)")
     parser.add_argument("--ticker", metavar="NAME",
                         help="ticker label for the CSV data (default: derived from filename)")
@@ -858,4 +862,4 @@ if __name__ == "__main__":
     if args.backtest:
         run_backtest()
     else:
-        main(csv_path=args.csv, ticker_override=args.ticker)
+        main(csv_path=args.csv_file, ticker_override=args.ticker)
