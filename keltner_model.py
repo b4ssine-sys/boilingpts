@@ -12,6 +12,7 @@ price shocks. All signal columns are computed causally: nothing on bar t is
 derived from data after bar t.
 """
 
+import argparse
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -387,6 +388,49 @@ def build(ticker: str, breadth: pd.Series | None = None) -> pd.DataFrame:
     return model.tail(WINDOW).round(4)
 
 
+def load_csv(path: str) -> pd.DataFrame:
+    """Load OHLCV data from a local CSV file.
+
+    Accepts common column naming conventions (case-insensitive):
+    Date, Open, High, Low, Close, Volume.
+    """
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip()
+    col_map = {}
+    for col in df.columns:
+        lc = col.lower()
+        if lc in ("date", "datetime", "timestamp"):
+            col_map[col] = "Date"
+        elif lc == "open":
+            col_map[col] = "Open"
+        elif lc == "high":
+            col_map[col] = "High"
+        elif lc == "low":
+            col_map[col] = "Low"
+        elif lc in ("close", "adj close", "adj_close", "adjusted close"):
+            col_map[col] = "Close"
+        elif lc == "volume":
+            col_map[col] = "Volume"
+    df = df.rename(columns=col_map)
+    for required in ("Date", "Open", "High", "Low", "Close"):
+        if required not in df.columns:
+            raise ValueError(
+                f"CSV missing required column '{required}'. "
+                f"Found: {list(df.columns)}"
+            )
+    df["Date"] = pd.to_datetime(df["Date"])
+    df = df.set_index("Date").sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    return df
+
+
+def build_from_csv(path: str, ticker: str = "CSV",
+                   breadth: pd.Series | None = None) -> pd.DataFrame:
+    """Build the full model from a local CSV file instead of Yahoo Finance."""
+    df = load_csv(path)
+    return _build_from_frame(ticker, df, breadth=breadth)
+
+
 def _format_ratio(v: float) -> str:
     return "inf" if np.isinf(v) else f"{v:.2f}"
 
@@ -500,14 +544,24 @@ def plot(ticker: str, model: pd.DataFrame) -> None:
     plt.close(fig)
 
 
-def main() -> None:
+def main(csv_path: str | None = None, ticker_override: str | None = None) -> None:
     print("Fetching S&P 500 breadth data...")
     breadth = _fetch_breadth()
-    for ticker in TICKERS:
-        model = build(ticker, breadth=breadth)
+
+    if csv_path:
+        ticker = ticker_override or csv_path.rsplit("/", 1)[-1].split(".")[0].upper()
+        print(f"Loading data from {csv_path} (ticker: {ticker})...")
+        model = build_from_csv(csv_path, ticker=ticker, breadth=breadth)
         model.to_csv(f"{ticker}_keltner.csv")
         readout(ticker, model)
         plot(ticker, model)
+        performance_report(model)
+    else:
+        for ticker in TICKERS:
+            model = build(ticker, breadth=breadth)
+            model.to_csv(f"{ticker}_keltner.csv")
+            readout(ticker, model)
+            plot(ticker, model)
     print("\nSaved CSV and PNG per ticker in the working directory.")
 
 
@@ -792,4 +846,16 @@ def run_backtest() -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Keltner Channel model")
+    parser.add_argument("--csv", metavar="FILE",
+                        help="path to a local OHLCV CSV file (bypasses Yahoo Finance)")
+    parser.add_argument("--ticker", metavar="NAME",
+                        help="ticker label for the CSV data (default: derived from filename)")
+    parser.add_argument("--backtest", action="store_true",
+                        help="run multi-ticker backtest (uses Yahoo Finance)")
+    args = parser.parse_args()
+
+    if args.backtest:
+        run_backtest()
+    else:
+        main(csv_path=args.csv, ticker_override=args.ticker)
