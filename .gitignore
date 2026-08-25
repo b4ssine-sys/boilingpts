@@ -9,3 +9,6 @@ venv/
 keltner_backtest_results.csv
 GSPC_raw.csv
 GSPC_touches.csv
+
+# user-provided data files
+spy.csv
