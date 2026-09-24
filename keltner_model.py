@@ -33,6 +33,7 @@ PIVOT_BARS = 3       # bars either side that define a swing low
 DIV_LOOKBACK = 60    # max bars back when pairing swing lows
 TOUCH_LEVEL = 0.15   # kc_pos at or below this counts as a lower-band touch
 FWD_DAYS = 10        # forward return horizon for touch validation
+SEED_BARS = 60       # leading bars the backtest skips while EMA/ATR/RSI settle
 
 # Optional volatility-regime scaling of the Keltner multiplier. Off by default:
 # switching it on changes what kc_pos and TOUCH_LEVEL mean, so touch counts and
@@ -248,7 +249,11 @@ def build(ticker: str) -> pd.DataFrame:
             f"no price data returned for {ticker!r} — check the symbol and "
             f"network access to Yahoo Finance"
         )
+    return model_from_frame(df).tail(WINDOW).round(4)
 
+
+def model_from_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Full indicator and touch-classification pipeline for one ticker's OHLC."""
     model = keltner(df).join(bollinger(df)).join(macd(df["Close"]))
     model["rsi"] = rsi(df["Close"], RSI_LEN)
     model["divergence"] = divergence(model["close"], model["rsi"], df["Low"])
@@ -261,9 +266,7 @@ def build(ticker: str) -> pd.DataFrame:
     model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["close"] * 100 - 100
 
     # Classify on the full history so divergence has swing lows to pair with
-    model = model.join(classify_touches(model))
-
-    return model.tail(WINDOW).round(4)
+    return model.join(classify_touches(model))
 
 
 def consecutive_true(series: pd.Series) -> int:
@@ -378,22 +381,6 @@ def main() -> None:
 # =============================================================================
 # BACKTEST EXECUTION
 # =============================================================================
-def _build_from_frame(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
-    """Same pipeline as build(), but takes an already-downloaded single-ticker frame."""
-    if df.empty:
-        raise RuntimeError(f"no price data for {ticker!r}")
-    model = keltner(df).join(bollinger(df)).join(macd(df["Close"]))
-    model["rsi"] = rsi(df["Close"], RSI_LEN)
-    model["divergence"] = divergence(model["close"], model["rsi"], df["Low"])
-    model["squeeze"] = (model["bb_upper"] < model["kc_upper"]) & (
-        model["bb_lower"] > model["kc_lower"]
-    )
-    model["touch"] = model["kc_pos"] <= TOUCH_LEVEL
-    model["fwd_ret_pct"] = model["close"].shift(-FWD_DAYS) / model["close"] * 100 - 100
-    model = model.join(classify_touches(model))
-    return model
-
-
 def run_backtest() -> pd.DataFrame:
     print(f"Downloading data for {len(TICKERS)} tickers...")
     raw_df = yf.download(TICKERS, period=WARMUP, auto_adjust=True, progress=False)
@@ -412,7 +399,9 @@ def run_backtest() -> pd.DataFrame:
         if df.empty:
             print(f"  WARNING: no data for {ticker}, skipping")
             continue
-        model = _build_from_frame(ticker, df)
+        # Early bars carry unsettled indicators (RSI swings 0-100 on the
+        # first few sessions), so they are excluded from scoring.
+        model = model_from_frame(df).iloc[SEED_BARS:].copy()
         model["Ticker"] = ticker
         pieces.append(model)
 
