@@ -145,6 +145,29 @@ class Lighting:
         self.sight_scale = 1.0       # smoothed radius multiplier the renderer applies
         self._sight_target = 1.0
 
+    def prewarm_steps(self, sight_max=240, light_max=380):
+        """Generator form of prewarm: yields a fraction (0..1) every few sprites."""
+        punch = list(range(BUCKET, int(light_max) + BUCKET, BUCKET))
+        glow = sorted({self.cache.glow_bucket(r) for r in range(BUCKET, int(light_max) + BUCKET, 4)})
+        rays = list(range(6 * RAY_BUCKET, int(light_max) + RAY_BUCKET, RAY_BUCKET)) if self.shafts else []
+        total = len(punch) + len(glow) + len(rays)
+        done = 0
+        for r in punch:
+            self.cache.punch(r, 1.0, self.scale)
+            if r <= sight_max:
+                self.cache.punch(r, SIGHT_STRENGTH, self.scale)
+            done += 1
+            yield done / total
+        for r in glow:
+            self.cache.glow(r, 1.0)
+            done += 1
+            yield done / total
+        for r in rays:                                   # flares only reach 150 and up
+            for phase in (0, 1):
+                self.cache.rays(r, phase, len(RAY_LEVELS) - 1)
+            done += 1
+            yield done / total
+
     def prewarm(self, sight_max=240, light_max=380):
         """Build every gradient sprite a session can ask for, at load time.
         Radii sweep through many buckets during a tint transition, and creating
@@ -152,16 +175,8 @@ class Lighting:
         shaft sprites are built here; dimmer levels are cheap copies made on first
         use. Steady sight pools use strength SIGHT_STRENGTH and stay small; flares
         and flashes use 1.0 and go larger."""
-        for r in range(BUCKET, int(light_max) + BUCKET, BUCKET):
-            self.cache.punch(r, 1.0, self.scale)
-            if r <= sight_max:
-                self.cache.punch(r, SIGHT_STRENGTH, self.scale)
-        for r in sorted({self.cache.glow_bucket(r) for r in range(BUCKET, int(light_max) + BUCKET, 4)}):
-            self.cache.glow(r, 1.0)
-        if self.shafts:
-            for r in range(6 * RAY_BUCKET, int(light_max) + RAY_BUCKET, RAY_BUCKET):   # flares only reach 150 and up
-                for phase in (0, 1):
-                    self.cache.rays(r, phase, len(RAY_LEVELS) - 1)
+        for _ in self.prewarm_steps(sight_max, light_max):
+            pass
 
     # ---- time of day ----
     def set_time_of_day(self, tod, sight_scale):

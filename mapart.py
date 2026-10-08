@@ -15,6 +15,15 @@ import palette as P
 TRAIL_W = 34          # drawn width of the mud road; the tile grid stays the rule
 
 
+def _span(gen, lo, hi):
+    """Re-scale a generator's 0..1 progress into lo..hi, passing its return value through."""
+    try:
+        while True:
+            yield lo + (hi - lo) * next(gen)
+    except StopIteration as done:
+        return done.value
+
+
 def _dist_to_segment(p, a, b):
     ax, ay = a
     bx, by = b
@@ -39,20 +48,27 @@ def _soft_noise(size, cell, tones, rng):
 
 
 def _ground(size, rng):
+    """Mottled green ground with grass flecks. A generator: yields a fraction (0..1) now and
+    then so loading can repaint; returns the surface."""
     greens = [P.shade("jungle_mid", f) for f in (0.7, 0.85, 1.0, 1.1)] + [P.color("jungle_light")]
     surf = _soft_noise(size, 64, greens, rng).subsurface((0, 0, *size)).copy()
+    yield 0.2
     fine = _soft_noise(size, 14, greens + [P.shade("leaf_deep", 1.2)], rng).subsurface((0, 0, *size)).copy()
     fine.set_alpha(120)
     surf.blit(fine, (0, 0))
+    yield 0.3
     w, h = size
-    for _ in range(w * h // 45):                      # grass flecks, light and dark
+    flecks = w * h // 45
+    for n in range(flecks):                           # grass flecks, light and dark
         x, y = rng.randrange(w), rng.randrange(h)
         tone = rng.choice(("leaf_deep", "jungle_dark", "jungle_light", "leaf_bright", "jungle_light"))
         pygame.draw.line(surf, P.shade(tone, 0.85 + rng.random() * 0.3), (x, y), (x + rng.choice((-1, 0, 1)), y - rng.randint(2, 4)))
+        if n % 1800 == 1799:
+            yield 0.3 + 0.7 * (n + 1) / flecks
     return surf
 
 
-def _scatter(game_map, centers, rng):
+def _scatter(game_map, centers, rng, detail=1.0):
     """Foliage positions: thick in the deep jungle, none on or beside the trails or in the firebase."""
     ts = game_map.tile_size
     w, h = game_map.world_size
@@ -63,15 +79,15 @@ def _scatter(game_map, centers, rng):
         return (_trail_distance((x, y), centers) > clear and math.hypot(x - bx, (y - by) * 0.8) > 118
                 and math.hypot(x - bx, y - by) > 112)
 
-    for _ in range(900):                                           # big canopy trees, well off the trails
+    for _ in range(int(900 * detail)):                             # big canopy trees, well off the trails
         x, y = rng.uniform(-10, w + 10), rng.uniform(-4, h + 20)
         if ok(x, y, 62) and all(math.hypot(x - ix, (y - iy)) > 66 for k, ix, iy, _ in items if k == "tree"):
             items.append(("tree", x, y, rng.randrange(4)))
-    for _ in range(1400):                                          # palms and ferns, closer in
+    for _ in range(int(1400 * detail)):                            # palms and ferns, closer in
         x, y = rng.uniform(0, w), rng.uniform(0, h + 10)
         if ok(x, y, 40) and all(math.hypot(x - ix, y - iy) > 30 for k, ix, iy, _ in items if k in ("palm", "fern")):
             items.append((rng.choice(("palm", "palm", "fern")), x, y, rng.randrange(4)))
-    for _ in range(500):                                           # bushes and grass everywhere legal
+    for _ in range(int(500 * detail)):                             # bushes and grass everywhere legal
         x, y = rng.uniform(0, w), rng.uniform(0, h + 6)
         if ok(x, y, 27):
             items.append((rng.choice(("bush", "tuft", "tuft", "tuft")), x, y, rng.randrange(3)))
@@ -223,22 +239,36 @@ def _vignette(surf):
     surf.blit(pygame.transform.smoothscale(small, (w, h)), (0, 0), special_flags=pygame.BLEND_MULT)
 
 
-def bake_map(game_map, strings, assets):
+CHUNK = 70   # sprites pasted between progress reports
+
+
+def bake_steps(game_map, strings, assets, detail=1.0):
+    """Generator behind bake_map. Yields a progress fraction (0..1) between phases so a
+    caller can repaint a loading bar and give the browser a turn; returns the surface.
+    `detail` below 1 thins the foliage for slower targets (the browser build)."""
     ts = game_map.tile_size
     size = game_map.world_size
     rng = random.Random(game_map.key)
-    surf = _ground(size, rng)
+    surf = yield from _span(_ground(size, rng), 0.0, 0.08)
     centers = [[(c * ts + ts / 2, r * ts + ts / 2) for c, r in path] for path in game_map.paths]
     variants = {k: [fn(i * 17 + 3) for i in range(4 if k in ("tree", "palm") else 3)] for k, fn in art.FOLIAGE.items()}
-    items = _scatter(game_map, centers, rng)
+    yield 0.14
+    items = _scatter(game_map, centers, rng, detail)
     scaled_cache = {}
-    for kind, x, y, v in items:                                    # jungle behind the roads
+    yield 0.24
+    for i, (kind, x, y, v) in enumerate(items):                    # jungle behind the roads
         scale = rng.choice((0.75, 0.9, 1.0, 1.15)) if kind in ("tree", "palm") else rng.choice((0.9, 1.0, 1.15))
         _paste(surf, variants[kind][v % len(variants[kind])], x, y, rng.random() < 0.5, scale, scaled_cache)
+        if i % CHUNK == CHUNK - 1:
+            yield 0.24 + 0.46 * (i + 1) / len(items)
     _trails(surf, centers, rng)
+    yield 0.74
     _route_marks(surf, centers)
-    for _ in range(int(sum(len(p) for p in centers) * 5)):         # ferns and grass fringing the road edges
-        a, b = rng.choice([(p[i], p[i + 1]) for p in centers for i in range(len(p) - 1)])
+    yield 0.78
+    segments = [(p[i], p[i + 1]) for p in centers for i in range(len(p) - 1)]
+    fringe = int(sum(len(p) for p in centers) * 5 * detail)
+    for n in range(fringe):                                        # ferns and grass fringing the road edges
+        a, b = rng.choice(segments)
         t = rng.random()
         L = math.dist(a, b)
         nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
@@ -248,9 +278,23 @@ def bake_map(game_map, strings, assets):
         if _trail_distance((x, y), centers) > TRAIL_W / 2 + 2:
             kind = rng.choice(("tuft", "tuft", "fern", "bush"))
             _paste(surf, variants[kind][rng.randrange(3)], x, y + 6, rng.random() < 0.5)
+        if n % 40 == 39:
+            yield 0.78 + 0.12 * (n + 1) / max(1, fringe)
     _firebase(surf, game_map, rng)
+    yield 0.94
     font = assets.font("label", 18)
     for key, col, row, degrees in game_map.labels:
         _stamp(surf, strings.get(key), font, (col * ts, row * ts), degrees)
     _vignette(surf)
+    yield 1.0
     return surf
+
+
+def bake_map(game_map, strings, assets, detail=1.0):
+    """The finished map surface. See bake_steps for the incremental form."""
+    gen = bake_steps(game_map, strings, assets, detail)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as done:
+        return done.value

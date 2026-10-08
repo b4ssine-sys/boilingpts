@@ -15,7 +15,7 @@ import palette as P
 from fx import Fx, Rain
 from layout import HUD_H, TRAY_H, screen_size
 from lighting import SIGHT_STRENGTH, Light, Lighting
-from mapart import bake_map
+from mapart import _span, bake_steps
 from ui import Hud
 from ui import wrap  # noqa: F401  (re-exported)
 
@@ -38,31 +38,54 @@ def screen_to_tile(pos, tile_size):
 
 
 class Renderer:
-    def __init__(self, strings, assets, game_map, game=None, quality="high"):
+    def __init__(self, strings, assets, game_map, game=None, quality="high", lazy=False):
         """quality "web" is for the browser build: a quarter-resolution darkness layer,
-        no light shafts and lighter rain, trading some polish for frame rate and memory."""
+        no light shafts, thinner foliage and lighter rain, trading some polish for load
+        time, frame rate and memory.
+
+        The heavy setup (painting the map, building light sprites) runs in small steps.
+        By default the constructor runs them all. With lazy=True it returns at once and
+        the caller iterates load_steps(), repainting a progress bar between steps, so a
+        slow machine or a browser never looks frozen. The renderer is usable once the
+        iteration finishes (`ready`)."""
         self.quality = quality
         self.strings = strings
         self.assets = assets
         self.map = game_map
-        self.background = bake_map(game_map, strings, assets)  # static, drawn once
         self.hud = None       # built on first use, once there is a game to read
         self.flashes = []     # [x, y, radius, ttl, age]: short-lived lights
         self._heading = {}    # id(enemy) -> last angle
-        w, h = game_map.world_size
-        web = quality == "web"
-        self.lighting = Lighting((w, h), scale=0.25 if web else 0.5, shafts=not web)
-        self.lighting.prewarm()
-        assets.prewarm(TOWER_SCALE, ENEMY_SCALE)
-        self.fx = Fx()
-        self.rain = Rain((w, h), drops=180 if web else 420)
         self.time = 0.0       # drives animation and flicker; presentation only
         self._recoil = {}     # (x, y) of a gun -> seconds of kick left
         self._last_enemies = {}   # id -> (image, x, y) for fading out the fallen
         self._last_towers = {}    # (x, y) -> (tower key, aim) for fading out lost positions
         self._sparkle_rng = random.Random(9)
+        self.ready = False
+        self._loader = self._load(game)
+        if not lazy:
+            for _ in self._loader:
+                pass
+
+    def load_steps(self):
+        """Iterate to finish loading; yields a progress fraction from 0 to 1."""
+        return self._loader
+
+    def _load(self, game):
+        web = self.quality == "web"
+        w, h = self.map.world_size
+        yield 0.0
+        self.background = yield from _span(
+            bake_steps(self.map, self.strings, self.assets, detail=0.6 if web else 1.0), 0.0, 0.70)
+        self.lighting = Lighting((w, h), scale=0.25 if web else 0.5, shafts=not web)
+        yield from _span(self.lighting.prewarm_steps(), 0.70, 0.90)
+        yield from _span(self.assets.prewarm_steps(TOWER_SCALE, ENEMY_SCALE), 0.90, 0.97)
+        self.fx = Fx()
+        self.rain = Rain((w, h), drops=180 if web else 420)
+        yield 0.98
         if game is not None:
             self._ensure_hud(game)   # build the interface textures now, not on the first frame
+        self.ready = True
+        yield 1.0
 
     # ---- per-frame bookkeeping ----
     def _ensure_hud(self, game):

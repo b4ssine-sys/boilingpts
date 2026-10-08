@@ -275,6 +275,26 @@
       "text": "LOADING",
       "kind": "ui",
       "status": "draft"
+    },
+    "load.progress": {
+      "text": "LOADING {pct}%",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "load.slow": {
+      "text": "Still working. Slower devices take longer on the first load.",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "load.error": {
+      "text": "Something went wrong.",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "load.error_hint": {
+      "text": "Details are in the browser console. Reload the page to try again.",
+      "kind": "ui",
+      "status": "draft"
     }
   }
 }

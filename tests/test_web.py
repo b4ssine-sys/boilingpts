@@ -36,6 +36,11 @@ def read(name):
 
 
 class StagingTests(unittest.TestCase):
+    def test_runtime_code_parses_under_the_python_the_browser_runs(self):
+        for name in build_web.local_imports():
+            for version in ((3, 12), (3, 11)):
+                ast.parse(read(name), name, feature_version=version)
+
     def test_import_closure_is_exactly_the_runtime_modules(self):
         self.assertEqual(build_web.local_imports(), RUNTIME_MODULES)
 
@@ -110,6 +115,10 @@ class DeployConfigTests(unittest.TestCase):
 
     def test_the_page_title_matches_the_desktop_window(self):
         self.assertEqual(build_web.TITLE, "Tower Defense")        # no working title is locked yet
+
+    def test_the_click_to_start_gate_is_off_until_there_is_sound_to_unlock(self):
+        self.assertEqual(build_web.UME_BLOCK, 0)
+        self.assertNotIn("mixer", read("audio.py"))              # still a silent stub: nothing to unlock yet
 
     def test_a_deploy_guide_exists_and_states_what_is_unverified(self):
         text = read("DEPLOY.md")

@@ -21,6 +21,9 @@ ENTRY = "main.py"
 DATA = ("strings.json", "assets")
 APP_NAME = "tower-defense"
 TITLE = "Tower Defense"          # same generic title as the desktop window until the real one is locked
+# pygbag normally holds the game behind a "click to start" page so browsers allow sound. There is no
+# sound yet, and the gate reads as a hang, so it is off. Set to 1 when real audio arrives.
+UME_BLOCK = 0
 STAGE_DIR = os.path.join(ROOT, "build", "stage", APP_NAME)
 OUT_DIR = os.path.join(ROOT, "public")
 
@@ -67,7 +70,7 @@ def build():
     files = stage()
     size = sum(os.path.getsize(os.path.join(STAGE_DIR, f)) for f in files)
     print(f"staged {len(files)} files, {size / 1e6:.1f} MB, in {os.path.relpath(STAGE_DIR, ROOT)}")
-    cmd = [sys.executable, "-m", "pygbag", "--build", "--title", TITLE, STAGE_DIR]
+    cmd = [sys.executable, "-m", "pygbag", "--build", "--title", TITLE, "--ume_block", str(UME_BLOCK), STAGE_DIR]
     print("running:", " ".join(os.path.basename(c) if i == 0 else c for i, c in enumerate(cmd)))
     subprocess.run(cmd, check=True)
     built = os.path.join(STAGE_DIR, "build", "web")

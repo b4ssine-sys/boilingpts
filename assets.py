@@ -134,10 +134,11 @@ class Assets:
                 base, (max(1, round(base.get_width() * k)), height))
         return self._icons[ck]
 
-    def prewarm(self, tower_scale, enemy_scale):
-        """Build every scaled, mirrored and rotated variant a session can ask for,
-        so nothing is created mid-frame."""
-        for key in REGISTRY:
+    def prewarm_steps(self, tower_scale, enemy_scale):
+        """Generator form of prewarm: yields a fraction (0..1) every few sprites."""
+        keys = list(REGISTRY)
+        total = len(keys)
+        for n, key in enumerate(keys):
             if key.startswith("enemy."):
                 self.flipped(key, enemy_scale, False)
                 self.flipped(key, enemy_scale, True)
@@ -146,6 +147,13 @@ class Assets:
             elif key.endswith(".gun"):
                 for deg in range(0, 360, 10):
                     self.rotated(key, -math.radians(deg), tower_scale)
+            yield (n + 1) / total
+
+    def prewarm(self, tower_scale, enemy_scale):
+        """Build every scaled, mirrored and rotated variant a session can ask for,
+        so nothing is created mid-frame."""
+        for _ in self.prewarm_steps(tower_scale, enemy_scale):
+            pass
 
     def font(self, role, size):
         ck = (role, size)

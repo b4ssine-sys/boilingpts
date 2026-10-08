@@ -51,13 +51,32 @@ browser, including its frame rate. Treat the first deploy as the real test and c
   complains about an externally managed environment, the install command already sets
   `PIP_BREAK_SYSTEM_PACKAGES=1`; if Python is missing from the build image, say so and
   the build can move to a GitHub Action that uploads `public/`.
-- The page shows "Ready to start! Please click/touch page", then the LOADING screen,
-  then the game. Loading is slower than on the desktop.
+- The page shows pygbag's own download bar (the Python and Pygame runtime, a few MB, is
+  fetched on the first visit), then the game's LOADING screen with a percentage bar. The
+  game does its setup in about 110 small steps and gives the browser a turn after each,
+  so the bar keeps moving. After 8 seconds it adds a note that slower devices take longer.
+  There is no click-to-start gate (`UME_BLOCK = 0` in `scripts/build_web.py`); switch it
+  back to 1 when real sound arrives, because browsers only allow audio after a click.
 - Frame rate. WebAssembly is several times slower than native Python-with-C-Pygame, and
   the game costs about 5 ms a frame natively. The browser build already uses the
   lighter setting (`Renderer(..., quality="web")`): the darkness layer at quarter
   resolution, no light shafts, less rain. If it still drops frames, the next cuts are
   fewer rain drops, no ripples, and a lower resolution map bake.
+
+## If it is stuck on loading
+
+Open the browser's developer console (F12, Console tab). The game prints one line per
+10% (`loading 40% (3.2s)`), so you can see whether it is progressing or stopped.
+
+- **Count stops moving and no error:** a step is taking very long on that device. Note the
+  percentage and the time and tell me; the slowest steps are the map bake (about 0 to 70%)
+  and the light sprites (70 to 90%).
+- **Red error text:** any failure while loading or playing is printed there with its
+  traceback and also drawn on the page ("Something went wrong") instead of leaving the
+  loading screen up. Send me the last lines.
+- **Nothing at all, not even the loading bar:** the failure is before the game starts, in
+  pygbag's runtime download or in the Vercel build. Check the network tab for a failed
+  `.apk` or `pythons.js` request, and the Vercel build log for `wrote public/`.
 
 ## Known differences in the browser
 
