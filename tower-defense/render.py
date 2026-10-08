@@ -5,20 +5,16 @@ import pygame
 
 import palette as P
 from lighting import SIGHT_STRENGTH, Light, Lighting
+from layout import HUD_H, TRAY_H, screen_size
 from mapart import bake_map
+from ui import Hud
 
-HUD_H = 40
 FPS = 60
 TOWER_PX = 34
 ENEMY_PX = 28
 EFFECT_TTL = 0.45
 # Short-lived lights: kind -> (radius, seconds). Muzzle flashes and claymore bursts.
 FLASHES = {"muzzle": (46, 0.12), "claymore": (120, 0.35)}
-
-
-def screen_size(game_map):
-    w, h = game_map.world_size
-    return w, h + HUD_H
 
 
 def world_to_screen(x, y):
@@ -30,16 +26,7 @@ def screen_to_tile(pos, tile_size):
     return int(x // tile_size), int((y - HUD_H) // tile_size)
 
 
-def wrap(font, text, width):
-    lines, cur = [], ""
-    for word in text.split():
-        trial = f"{cur} {word}".strip()
-        if font.size(trial)[0] <= width or not cur:
-            cur = trial
-        else:
-            lines.append(cur)
-            cur = word
-    return lines + [cur] if cur else lines
+from ui import wrap  # noqa: E402,F401  (re-exported)
 
 
 class Renderer:
@@ -48,10 +35,7 @@ class Renderer:
         self.assets = assets
         self.map = game_map
         self.background = bake_map(game_map, strings, assets)  # static, drawn once
-        self.f_hud = assets.font("label", 15)
-        self.f_hud2 = assets.font("log", 15)
-        self.f_title = assets.font("label", 54)
-        self.f_body = assets.font("log", 18)
+        self.hud = None       # built on first use, once there is a game to read
         self.effects = []     # [kind, x, y, radius, age]
         self.flashes = []     # [x, y, radius, ttl, age]
         self._heading = {}    # id(enemy) -> last angle
@@ -61,7 +45,13 @@ class Renderer:
         self.time = 0.0       # drives flare flicker; presentation only
 
     # ---- per-frame bookkeeping ----
+    def _ensure_hud(self, game):
+        if self.hud is None:
+            self.hud = Hud(self.strings, self.assets, game)
+        return self.hud
+
     def update(self, dt, game):
+        self._ensure_hud(game).update(dt, game)
         self.time += dt
         self.lighting.set_time_of_day(game.time_of_day, game.time_rule.sight_scale)
         self.lighting.update(dt)
@@ -92,6 +82,10 @@ class Renderer:
             out.append(Light(x, y + HUD_H, r * (1 - 0.5 * age / ttl), 1.0, True, False))
         return out
 
+    def hit_test(self, pos, game):
+        """Route a click to the UI first; None means it was meant for the map."""
+        return self._ensure_hud(game).hit_test(pos, game)
+
     def draw(self, screen, game, build_key, mouse_pos):
         m = game.map
         ts = m.tile_size
@@ -112,15 +106,15 @@ class Renderer:
         self.lighting.render(screen, self._lights(game), HUD_H)
         self._draw_contacts(screen, game)
         self._draw_hover(screen, game, tdef, mouse_pos)
-        self._draw_hud(screen, game, tdef, width)
-        if game.state != "playing":
-            self._draw_end_card(screen, game, width, height)
+        hud = self._ensure_hud(game)
+        hud.mouse = mouse_pos
+        hud.draw(screen, game, build_key)
 
     # ---- layers ----
     def _draw_hover(self, screen, game, tdef, mouse_pos):
         ts = game.map.tile_size
         hc, hr = screen_to_tile(mouse_pos, ts)
-        if not game.placement_ok(hc, hr, tdef.key):
+        if game.state != "playing" or not game.placement_ok(hc, hr, tdef.key):
             return
         ok = game.supply >= tdef.cost
         col = P.color("amber") if ok else P.color("clay")
@@ -203,40 +197,3 @@ class Renderer:
             pygame.draw.circle(surf, col, (11, 11), 9, 2)
             pygame.draw.circle(surf, col, (11, 11), 2)
             screen.blit(surf, (c.x - 11, c.y + HUD_H - 11))
-
-    def _draw_hud(self, screen, game, tdef, width):
-        s = self.strings
-        pygame.draw.rect(screen, P.color("ink"), (0, 0, width, HUD_H))
-        pygame.draw.line(screen, P.color("clay"), (0, HUD_H - 1), (width, HUD_H - 1))
-        can_call = not game.wave_active and game.state == "playing"
-        line1 = s.get("hud.line1", supply=game.supply, integrity=game.integrity,
-                      wave=game.wave, total=len(game.map.waves),
-                      tod=s.get(f"time.{game.time_of_day}"))
-        idx = game.map.towers.index(tdef.key) + 1
-        line2 = s.get("hud.line2", n=idx, tower=s.get(f"tower.{tdef.key}.name"), cost=tdef.cost,
-                      hint=s.get("hud.hint_next_wave" if can_call else "hud.hint_busy"))
-        screen.blit(self.f_hud.render(line1, True, P.color("paper")), (10, 4))
-        screen.blit(self.f_hud2.render(line2, True, P.color("khaki")), (10, 22))
-
-    def _draw_end_card(self, screen, game, width, height):
-        s = self.strings
-        outcome = "won" if game.state == "won" else "lost"
-        card = pygame.Rect(0, 0, 560, 270)
-        card.center = (width / 2, height / 2)
-        shadow = card.move(5, 6)
-        pygame.draw.rect(screen, P.mix("paper", "ink", 0.6), shadow)
-        pygame.draw.rect(screen, P.color("paper"), card)
-        pygame.draw.rect(screen, P.color("ink"), card, 2)
-        title = self.f_title.render(s.get(f"end.{outcome}.title").upper(), True, P.color("clay"))
-        screen.blit(title, title.get_rect(midtop=(card.centerx, card.top + 18)))
-        y = card.top + 90
-        body = s.get(f"end.{outcome}.body")
-        ctx_key = f"map.{game.map.key}.context"
-        lines = wrap(self.f_body, body, card.w - 40) + [""] + wrap(self.f_body, s.get(ctx_key), card.w - 40)
-        for ln in lines:
-            if ln:
-                img = self.f_body.render(ln, True, P.color("ink"))
-                screen.blit(img, img.get_rect(midtop=(card.centerx, y)))
-            y += 22
-        sub = self.f_body.render(s.get("end.restart"), True, P.color("olive_drab"))
-        screen.blit(sub, sub.get_rect(midbottom=(card.centerx, card.bottom - 12)))

@@ -302,6 +302,9 @@ class Game:
         self.bullets = []
         self.shells = []
         self.events = []  # (kind, x, y, radius) for the presentation layer, rebuilt each update
+        self._queued = []  # events raised between updates, such as a wave being called
+        # Totals for the debrief card.
+        self.stats = {"waves_cleared": 0, "stopped": 0, "leaked": 0, "built": 0, "lost": 0}
         self.groups = []  # live spawn state: [SpawnGroup, remaining, timer]
         self.state = "playing"  # playing | won | lost
         self.time_of_day = "day"  # follows the most recently started wave
@@ -324,6 +327,7 @@ class Game:
         wave = self.map.waves[self.wave]
         self.wave += 1
         self.time_of_day = wave.time_of_day
+        self._queued.append(("wave_start", 0, 0, self.wave))
         self.groups = [[g, g.count, g.delay] for g in wave.groups]
 
     def placement_ok(self, col, row, tower_key):
@@ -343,6 +347,7 @@ class Game:
             return False
         self.supply -= tdef.cost
         self.towers[(col, row)] = Tower(tdef, col, row, self.map.tile_size)
+        self.stats["built"] += 1
         return True
 
     # ---- light and visibility ----
@@ -418,7 +423,9 @@ class Game:
                 state[2] = g.interval
 
     def update(self, dt):
-        self.events = []  # cleared first so a finished game never replays old events
+        # Cleared first so a finished game never replays old events. Anything raised
+        # since the last update (a wave called by key press) is delivered now.
+        self.events, self._queued = self._queued, []
         if self.state != "playing":
             return
         was_active = self.wave_active
@@ -436,8 +443,10 @@ class Game:
         for e in self.enemies:
             if e.hp <= 0:
                 self.supply += e.defn.kill_reward
+                self.stats["stopped"] += 1
             elif e.reached_end:
                 self.integrity -= 1
+                self.stats["leaked"] += 1
         self.enemies = [e for e in self.enemies if e.alive]
         self.bullets = [b for b in self.bullets if not b.done]
         self.shells = [sh for sh in self.shells if not sh.done]
@@ -446,12 +455,16 @@ class Game:
                 del self.towers[pos]
             elif t.hp <= 0:
                 del self.towers[pos]
+                self.stats["lost"] += 1
                 self.events.append(("tower_lost", t.x, t.y, 0))
 
         if self.integrity <= 0:
             self.state = "lost"
         elif was_active and not self.wave_active:
+            self.stats["waves_cleared"] += 1
+            self.events.append(("wave_clear", 0, 0, self.wave))
             if self.wave >= len(self.map.waves):
                 self.state = "won"
             else:
                 self.supply += self.map.resupply_bonus
+                self.events.append(("resupply", 0, 0, self.map.resupply_bonus))

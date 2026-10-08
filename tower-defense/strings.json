@@ -1,11 +1,6 @@
 {
   "_readme": "Every line the player can read lives here. Edit text freely; keep the {placeholders}. kind is ui or narrative. Narrative entries stay status=draft until the consultant signs off, then set status=approved and fill reviewed_by.",
   "strings": {
-    "hud.hint_next_wave": {
-      "text": "    [1-4: select]  [SPACE: next wave]",
-      "kind": "ui",
-      "status": "draft"
-    },
     "end.won.title": {
       "text": "Position held",
       "kind": "narrative",
@@ -28,21 +23,6 @@
     },
     "end.restart": {
       "text": "Press R to restart",
-      "kind": "ui",
-      "status": "draft"
-    },
-    "hud.line1": {
-      "text": "Supply Points {supply}    Base Integrity {integrity}    Wave {wave}/{total}    {tod}",
-      "kind": "ui",
-      "status": "draft"
-    },
-    "hud.line2": {
-      "text": "Position {n}: {tower}, cost {cost}{hint}",
-      "kind": "ui",
-      "status": "draft"
-    },
-    "hud.hint_busy": {
-      "text": "    [1-4: select]",
       "kind": "ui",
       "status": "draft"
     },
@@ -82,7 +62,7 @@
       "status": "draft"
     },
     "tower.flare.role": {
-      "text": "Deals no damage. Lights a wide area so every tower can see there, and steadies fire from towers inside it at night.",
+      "text": "No damage. Lights a wide area: every tower sees there, and towers inside it aim true at night.",
       "kind": "ui",
       "status": "draft"
     },
@@ -193,6 +173,96 @@
     },
     "time.dawn": {
       "text": "Dawn",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.supply": {
+      "text": "SUPPLY POINTS",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.integrity": {
+      "text": "BASE INTEGRITY",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.wave": {
+      "text": "WAVE",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.wave_value": {
+      "text": "{wave}/{total}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.next_wave": {
+      "text": "CALL NEXT WAVE",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.next_wave_busy": {
+      "text": "WAVE UNDERWAY",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.next_wave_key": {
+      "text": "SPACE",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tray.cost": {
+      "text": "{cost}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "log.start": {
+      "text": "Radio check. Firebase standing by.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.wave_clear": {
+      "text": "Contact broken. Standing by.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.tower_lost": {
+      "text": "Position overrun.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "end.stats.title": {
+      "text": "DEBRIEF",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "end.stats.waves": {
+      "text": "Waves held: {n} of {total}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "end.stats.stopped": {
+      "text": "Contacts stopped: {n}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "end.stats.leaked": {
+      "text": "Contacts reaching the base: {n}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "end.stats.built": {
+      "text": "Positions built: {n}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "end.stats.lost": {
+      "text": "Positions lost: {n}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "end.restart_stamp": {
+      "text": "R  RESTART",
       "kind": "ui",
       "status": "draft"
     }

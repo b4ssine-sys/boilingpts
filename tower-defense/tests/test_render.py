@@ -14,7 +14,8 @@ import palette
 from assets import Assets
 from content import CONTENT
 from mapart import bake_map
-from render import HUD_H, Renderer, screen_size, screen_to_tile, wrap
+from layout import HUD_H, TRAY_H
+from render import Renderer, screen_size, screen_to_tile, wrap
 from sim import Game
 from strings import Strings
 
@@ -117,7 +118,7 @@ class RenderSmokeTests(unittest.TestCase):
         pygame.quit()
 
     def test_screen_and_tile_mapping(self):
-        self.assertEqual(screen_size(self.game.map), (800, 600 + HUD_H))
+        self.assertEqual(screen_size(self.game.map), (800, HUD_H + 600 + TRAY_H))
         self.assertEqual(screen_to_tile((85, HUD_H + 85), 40), (2, 2))
 
     def test_draws_a_full_run_with_every_tower_and_enemy(self):
@@ -138,15 +139,6 @@ class RenderSmokeTests(unittest.TestCase):
         for state in ("won", "lost"):
             g.state = state
             self.renderer.draw(self.screen, g, "mg_nest", (100, 100))
-
-    def test_hud_lines_fit_the_window(self):
-        s = self.renderer.strings
-        l1 = s.get("hud.line1", supply=99999, integrity=10, wave=8, total=8, tod=s.get("time.dark"))
-        for key in self.game.map.towers:
-            l2 = s.get("hud.line2", n=4, tower=s.get(f"tower.{key}.name"), cost=100,
-                       hint=s.get("hud.hint_next_wave"))
-            self.assertLessEqual(self.renderer.f_hud2.size(l2)[0] + 10, self.screen.get_width())
-        self.assertLessEqual(self.renderer.f_hud.size(l1)[0] + 10, self.screen.get_width())
 
     def test_unseen_enemies_are_not_drawn_but_contacts_are(self):
         g = self.game
@@ -179,7 +171,7 @@ class RenderSmokeTests(unittest.TestCase):
             self.assertTrue(s.get(f"time.{tod}"))
 
     def test_wrap_respects_width(self):
-        f = self.renderer.f_body
+        f = self.renderer._ensure_hud(self.game).f_body
         for line in wrap(f, s := Strings.load().get("map.firebase.context"), 520):
             self.assertLessEqual(f.size(line)[0], 520)
         self.assertEqual(" ".join(wrap(f, s, 520)), s)

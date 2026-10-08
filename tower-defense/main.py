@@ -1,8 +1,9 @@
 """Tower defense vertical slice (working title).
 
-Click a tile to build the selected position (costs Supply Points). Machine gun
-nests, mortar pits and flare towers go on open ground; claymore lines go on the
-trail. Hold the firebase through all waves.
+Pick a position from the tray (click it or press 1-4), then click a tile to
+build it (costs Supply Points). Machine gun nests, mortar pits and flare towers
+go on open ground; claymore lines go on the trail. Hold the firebase through
+all waves.
 
 Keys: 1-4 select position, SPACE call the next wave early, R restart, ESC quit.
 
@@ -15,12 +16,16 @@ Layout:
     assets.py    sprites and fonts by key, with drawn fallbacks
     mapart.py    bakes the static field-map background
     lighting.py  darkness overlay and light glows
+    ui.py        counters, radio log, build tray, banner, debrief card
+    layout.py    screen layout constants
+    audio.py     every sound goes through audio.play (silent stub for now)
     render.py    drawing, no state changes
 """
 import sys
 
 import pygame
 
+import audio
 from assets import Assets
 from content import CONTENT
 from render import FPS, Renderer, screen_size, screen_to_tile
@@ -59,8 +64,19 @@ def main():
                     if i < len(game.map.towers):
                         build_key = game.map.towers[i]
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                col, row = screen_to_tile(event.pos, game.map.tile_size)
-                game.try_build(col, row, build_key)
+                hit = renderer.hit_test(event.pos, game)
+                if hit is None:
+                    col, row = screen_to_tile(event.pos, game.map.tile_size)
+                    if game.try_build(col, row, build_key):
+                        audio.play("build")
+                elif hit[0] == "card":
+                    build_key = hit[1]
+                    audio.play("ui_click")
+                elif hit[0] == "next_wave":
+                    game.start_wave()
+                    audio.play("ui_click")
+                elif hit[0] == "restart":
+                    game.reset()
         game.update(dt)
         renderer.update(dt, game)
         renderer.draw(screen, game, build_key, pygame.mouse.get_pos())
