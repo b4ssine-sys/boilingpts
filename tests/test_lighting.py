@@ -120,12 +120,13 @@ class LightingTests(unittest.TestCase):
     def test_prewarm_covers_a_full_session_of_radii(self):
         light = Lighting((800, 600))
         light.prewarm()
-        n_punch, n_glow = len(light.cache._punch), len(light.cache._glow)
+        radii = lambda d: {k[0] for k in d}
+        n_punch, n_glow = radii(light.cache._punch), radii(light.cache._glow)
         self.settle(light, "dark")
         for r in range(40, 372, 3):                   # sweep radii the way a transition does
             light.render(self.screen, [Light(300, 300, r, 1.0, True, False),
                                        Light(500, 300, min(r, 230), SIGHT_STRENGTH, False, True)], 40)
-        self.assertEqual((len(light.cache._punch), len(light.cache._glow)), (n_punch, n_glow))
+        self.assertEqual((radii(light.cache._punch), radii(light.cache._glow)), (n_punch, n_glow))   # no new sizes mid-session
 
     def test_glow_levels_are_ordered_and_only_tint(self):
         light = Lighting((800, 600))

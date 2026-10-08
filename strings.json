@@ -270,6 +270,11 @@
       "text": "NEXT: {tod}",
       "kind": "ui",
       "status": "draft"
+    },
+    "load.text": {
+      "text": "LOADING",
+      "kind": "ui",
+      "status": "draft"
     }
   }
 }

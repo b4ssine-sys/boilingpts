@@ -38,7 +38,10 @@ def screen_to_tile(pos, tile_size):
 
 
 class Renderer:
-    def __init__(self, strings, assets, game_map, game=None):
+    def __init__(self, strings, assets, game_map, game=None, quality="high"):
+        """quality "web" is for the browser build: a quarter-resolution darkness layer,
+        no light shafts and lighter rain, trading some polish for frame rate and memory."""
+        self.quality = quality
         self.strings = strings
         self.assets = assets
         self.map = game_map
@@ -47,11 +50,12 @@ class Renderer:
         self.flashes = []     # [x, y, radius, ttl, age]: short-lived lights
         self._heading = {}    # id(enemy) -> last angle
         w, h = game_map.world_size
-        self.lighting = Lighting((w, h))
+        web = quality == "web"
+        self.lighting = Lighting((w, h), scale=0.25 if web else 0.5, shafts=not web)
         self.lighting.prewarm()
         assets.prewarm(TOWER_SCALE, ENEMY_SCALE)
         self.fx = Fx()
-        self.rain = Rain((w, h))
+        self.rain = Rain((w, h), drops=180 if web else 420)
         self.time = 0.0       # drives animation and flicker; presentation only
         self._recoil = {}     # (x, y) of a gun -> seconds of kick left
         self._last_enemies = {}   # id -> (image, x, y) for fading out the fallen

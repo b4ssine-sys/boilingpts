@@ -16,6 +16,8 @@ import pygame
 import palette as P
 
 BUCKET = 8            # radii round to this many pixels so the sprite cache stays small
+BIG_GLOW = 144        # glows larger than this use coarser buckets: they are big, and memory adds up
+BIG_BUCKET = 24
 TRANSITION_TAU = 1.0  # seconds; a tint change is ~95% done after three of these
 MIN_ALPHA = 2         # below this the overlay is skipped entirely (daylight)
 SIGHT_STRENGTH = 0.6  # tower and base sight pools leave a little dusk; flares clear it fully
@@ -65,23 +67,29 @@ class GradientCache:
             self._punch[key] = pygame.transform.smoothscale(small, (r * 2, r * 2))
         return self._punch[key]
 
+    @staticmethod
+    def glow_bucket(radius):
+        if radius <= BIG_GLOW:
+            return max(BUCKET, round(radius / BUCKET) * BUCKET)
+        return max(BIG_GLOW + BIG_BUCKET, -(-round(radius) // BIG_BUCKET) * BIG_BUCKET)   # round up so it never undersizes
+
     def glow(self, radius, level=1.0):
         """Warm amber wash: a plain per-pixel alpha blend, so it tints but never
         blows out. Strength comes in a few fixed levels because blending with a
-        surface alpha as well is several times slower."""
-        r = max(BUCKET, round(radius / BUCKET) * BUCKET)
+        surface alpha as well is several times slower. Dimmer levels are the full
+        one with its alpha scaled down, built the first time they are needed."""
+        r = self.glow_bucket(radius)
         key = (r, level)
         if key not in self._glow:
             if level == 1.0:
                 amber = P.color("amber")
                 small = self._small(lambda f: (*amber, int(255 * f * f * 0.40)))
                 self._glow[key] = pygame.transform.smoothscale(small, (r * 2, r * 2)).convert_alpha()
-            else:  # dimmer levels are the full one with its alpha scaled down
+            else:
                 dim = self.glow(r, 1.0).copy()
                 dim.fill((255, 255, 255, int(255 * level)), special_flags=pygame.BLEND_RGBA_MULT)
                 self._glow[key] = dim
         return self._glow[key]
-
 
     def rays(self, radius, phase, level):
         """Additive light shafts fanning out from a lamp, faded toward their tips.
@@ -117,11 +125,14 @@ class GradientCache:
 
 
 class Lighting:
-    def __init__(self, size, scale=0.5):
+    def __init__(self, size, scale=0.5, shafts=True):
         """size: pixel size of the map area the overlay covers. scale 0.5 is the
-        default; 0.25 is the fallback if a target machine misses 60 FPS."""
+        default; 0.25 is the fallback if a target machine misses 60 FPS. shafts=False
+        drops the volumetric light shafts, which cost the most memory and fill rate
+        (the browser build turns them off)."""
         self.size = size
         self.scale = scale
+        self.shafts = shafts
         self.w, self.h = max(1, int(size[0] * scale)), max(1, int(size[1] * scale))
         self.cache = GradientCache()
         self._out = pygame.Surface(size, pygame.SRCALPHA)
@@ -137,18 +148,20 @@ class Lighting:
     def prewarm(self, sight_max=240, light_max=380):
         """Build every gradient sprite a session can ask for, at load time.
         Radii sweep through many buckets during a tint transition, and creating
-        sprites mid-frame causes visible hitches. Steady sight pools use
-        strength SIGHT_STRENGTH and stay small; flares and flashes use 1.0 and go larger."""
+        sprites mid-frame causes visible hitches. Only the full-strength glow and
+        shaft sprites are built here; dimmer levels are cheap copies made on first
+        use. Steady sight pools use strength SIGHT_STRENGTH and stay small; flares
+        and flashes use 1.0 and go larger."""
         for r in range(BUCKET, int(light_max) + BUCKET, BUCKET):
             self.cache.punch(r, 1.0, self.scale)
             if r <= sight_max:
                 self.cache.punch(r, SIGHT_STRENGTH, self.scale)
-            for level in GLOW_LEVELS:
-                self.cache.glow(r, level)
-        for r in range(6 * RAY_BUCKET, int(light_max) + RAY_BUCKET, RAY_BUCKET):   # flares only reach 150 and up
-            for phase in (0, 1):
-                for level in range(len(RAY_LEVELS)):
-                    self.cache.rays(r, phase, level)
+        for r in sorted({self.cache.glow_bucket(r) for r in range(BUCKET, int(light_max) + BUCKET, 4)}):
+            self.cache.glow(r, 1.0)
+        if self.shafts:
+            for r in range(6 * RAY_BUCKET, int(light_max) + RAY_BUCKET, RAY_BUCKET):   # flares only reach 150 and up
+                for phase in (0, 1):
+                    self.cache.rays(r, phase, len(RAY_LEVELS) - 1)
 
     # ---- time of day ----
     def set_time_of_day(self, tod, sight_scale):
@@ -208,7 +221,7 @@ class Lighting:
         """Volumetric light shafts, drawn additively after the darkness so they glow.
         shafts: [(x, y, radius)] for each lamp. Faint at dusk and dawn, full at night."""
         gain = (self.alpha - 40) / 138
-        if gain <= 0.1:
+        if not self.shafts or gain <= 0.1:
             return
         base = 2 if gain > 0.75 else 1 if gain > 0.35 else 0
         for i, (x, y, radius) in enumerate(shafts):

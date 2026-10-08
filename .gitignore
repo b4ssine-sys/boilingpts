@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# browser build output (made by scripts/build_web.py; Vercel builds it on deploy)
+build/
+public/
+.vercel/

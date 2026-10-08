@@ -42,11 +42,11 @@ class Rain:
     so the dark swallows them and the lit pools make them shimmer."""
     SLANT = 0.28
 
-    def __init__(self, size, seed=11):
+    def __init__(self, size, seed=11, drops=420):
         self.w, self.h = size
         self.rng = random.Random(seed)
         self.drops = [[self.rng.uniform(0, self.w), self.rng.uniform(0, self.h),
-                       self.rng.uniform(520, 760), self.rng.uniform(7, 13)] for _ in range(420)]
+                       self.rng.uniform(520, 760), self.rng.uniform(7, 13)] for _ in range(drops)]
         self.ripples = []   # [x, y, age]
         self.intensity = 0.0
 

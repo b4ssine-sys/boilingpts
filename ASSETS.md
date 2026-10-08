@@ -5,9 +5,9 @@ ships without one.
 
 ## Current state
 
-No external assets are bundled. Every sprite is painted at load by `art.py`,
+The only bundled files are the two fonts below. Every sprite is painted at load by `art.py`,
 the map by `mapart.py`, effects by `fx.py`, and every colour comes from
-`palette.py`. Nothing here needs a license. The painting is placeholder-grade
+`palette.py`. The painting needs no license. The painting is placeholder-grade
 art that stands in until the concept artist delivers; real files replace it by
 name with no code change.
 
@@ -43,23 +43,23 @@ on the ground point `art.ANCHOR` (towers 50%/64% of the canvas, enemies
 `<t>` is `mg_nest`, `mortar`, `claymore` or `flare`; `<e>` is `scout`, `infantry`
 or `sapper`. A missing or corrupt file falls back to the painting.
 
-## Fonts (open item)
+## Fonts
 
-The brief asks for a typewriter face (radio log, body) and a stencil face
-(labels). No font file is bundled yet. Until one is chosen and its license
-recorded, `assets.py` uses system fonts:
+Two fonts are bundled so the browser build, which has no system fonts, looks the same
+as the desktop one:
 
-| Role | Looks up | Falls back to |
-|---|---|---|
-| `log` | Courier New, Courier, DejaVu Sans Mono | pygame default |
-| `label` | Impact, Arial Black, DejaVu Sans (bold) | pygame default |
+| Role | File | Face | Used for |
+|---|---|---|---|
+| `log` | `assets/fonts/log.ttf` | DejaVu Sans Mono | radio log, body text (typewriter stand-in) |
+| `label` | `assets/fonts/label.ttf` | DejaVu Sans Bold | labels, counters, stamps (stencil stand-in) |
 
-To add a font, drop `assets/fonts/log.ttf` or `assets/fonts/label.ttf` in place
-and add a row below. Candidates to evaluate (confirm each license before use):
-a typewriter face and a stencil face under SIL OFL.
+They are stand-ins. The brief asks for a true typewriter face and a stencil face; pick
+those (confirm each license, SIL OFL is a good fit) and drop them over these two
+files. Without the files, `assets.py` falls back to system fonts.
 
 ## Register
 
 | File | Source | Author | License |
 |---|---|---|---|
-| (none yet) | | | |
+| `assets/fonts/log.ttf` | DejaVu Sans Mono, from the Debian `fonts-dejavu-core` package | Bitstream, Inc. and the DejaVu authors | Bitstream Vera license: free to use and redistribute with the notice, which ships as `assets/fonts/LICENSE-DejaVu.txt` |
+| `assets/fonts/label.ttf` | DejaVu Sans Bold, same package | same | same |

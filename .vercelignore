@@ -1,0 +1,10 @@
+# Not needed to build or run the browser version
+tests/
+spikes/
+__pycache__/
+*.pyc
+build/
+public/
+CREATIVE_BRIEF.md
+ENGINEERING_REFERENCE.md
+FORWARD_PLAN.md

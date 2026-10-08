@@ -1,0 +1,2 @@
+# Build-time only: compiles the game for the browser. Vercel installs this, the game itself needs no packages.
+pygbag==0.9.3
