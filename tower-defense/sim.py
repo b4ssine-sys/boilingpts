@@ -28,9 +28,9 @@ def path_length(waypoints):
     return sum(math.dist(a, b) for a, b in zip(waypoints, waypoints[1:]))
 
 
-# ---- enemy behaviors: fn(enemy, dt) moves the enemy ----
+# ---- enemy behaviors: fn(enemy, dt, game) moves or acts ----
 
-def _follow_path(enemy, dt):
+def _follow_path(enemy, dt, game=None):
     step = enemy.speed * dt
     enemy.progress += step
     wps = enemy.waypoints
@@ -49,7 +49,41 @@ def _follow_path(enemy, dt):
         enemy.reached_end = True
 
 
-BEHAVIORS = {"follow_path": _follow_path}
+def _nearest_tower(enemy, towers, within):
+    best, best_d = None, within
+    for t in towers:
+        if t.defn.kind == "mine" or t.hp <= 0:
+            continue
+        d = math.hypot(t.x - enemy.x, t.y - enemy.y)
+        if d <= best_d:
+            best, best_d = t, d
+    return best
+
+
+def _seek_tower(enemy, dt, game):
+    """Walk the trail until a tower comes within aggro range, then go and hit
+    it. If every nearby tower falls, rejoin the trail from where it stands."""
+    d = enemy.defn
+    if enemy.tower_target is None or enemy.tower_target.hp <= 0:
+        enemy.tower_target = _nearest_tower(enemy, game.towers.values(), d.aggro_range)
+    tgt = enemy.tower_target
+    if tgt is None:
+        _follow_path(enemy, dt)
+        return
+    dx, dy = tgt.x - enemy.x, tgt.y - enemy.y
+    dist = math.hypot(dx, dy)
+    if dist > d.attack_range:
+        step = min(enemy.speed * dt, dist - d.attack_range)
+        enemy.x += dx / dist * step
+        enemy.y += dy / dist * step
+        return
+    enemy.attack_cooldown -= dt
+    if enemy.attack_cooldown <= 0:
+        tgt.hp -= d.attack_damage
+        enemy.attack_cooldown = d.attack_interval
+
+
+BEHAVIORS = {"follow_path": _follow_path, "seek_tower": _seek_tower}
 
 
 class Enemy:
@@ -63,6 +97,8 @@ class Enemy:
         self.progress = 0.0  # distance walked along its path
         self.path_length = path_length(waypoints)
         self.reached_end = False
+        self.tower_target = None
+        self.attack_cooldown = 0.0
 
     @property
     def alive(self):
@@ -73,8 +109,25 @@ class Enemy:
         """How far along its own path, 0..1. Comparable across paths."""
         return self.progress / self.path_length if self.path_length else 1.0
 
-    def update(self, dt):
-        BEHAVIORS[self.defn.behavior](self, dt)
+    def update(self, dt, game=None):
+        BEHAVIORS[self.defn.behavior](self, dt, game)
+
+    def predict(self, seconds):
+        """Where this enemy will be after `seconds` if it keeps to its path."""
+        if self.tower_target is not None:
+            return self.x, self.y
+        x, y, idx, step = self.x, self.y, self.target, self.speed * seconds
+        wps = self.waypoints
+        while step > 0 and idx < len(wps):
+            tx, ty = wps[idx]
+            dist = math.hypot(tx - x, ty - y)
+            if dist <= step:
+                x, y, step, idx = tx, ty, step - dist, idx + 1
+            else:
+                x += (tx - x) / dist * step
+                y += (ty - y) / dist * step
+                step = 0
+        return x, y
 
 
 class Bullet:
@@ -108,29 +161,81 @@ TARGETING = {
 }
 
 
+class Shell:
+    """Mortar round. Flies to a fixed point and splashes whatever is there."""
+
+    def __init__(self, x, y, tx, ty, damage, speed, radius):
+        self.x, self.y = x, y
+        self.tx, self.ty = tx, ty
+        self.damage, self.speed, self.radius = damage, speed, radius
+        self.done = False
+
+    def update(self, dt, game):
+        dx, dy = self.tx - self.x, self.ty - self.y
+        dist = math.hypot(dx, dy)
+        step = self.speed * dt
+        if dist <= step:
+            game.splash(self.tx, self.ty, self.radius, self.damage)
+            game.events.append(("splash", self.tx, self.ty, self.radius))
+            self.done = True
+        else:
+            self.x += dx / dist * step
+            self.y += dy / dist * step
+
+
 class Tower:
     def __init__(self, tdef, col, row, tile_size):
         self.defn = tdef
         self.col, self.row = col, row
         self.x, self.y = tile_center(col, row, tile_size)
         self.cooldown = 0.0
+        self.hp = self.max_hp = tdef.hp
+        self.aim = 0.0      # radians, last direction fired
+        self.spent = False  # mines: already burst
 
-    def update(self, dt, enemies, bullets):
+    def update(self, dt, game):
+        k = self.defn.kind
+        if k == "turret":
+            self._fire(dt, game)
+        elif k == "mine":
+            self._trigger(game)
+
+    def _fire(self, dt, game):
         self.cooldown -= dt
         if self.cooldown > 0:
             return
         d = self.defn
         cands = []
-        for e in enemies:
+        for e in game.enemies:
             if not e.alive:
                 continue
             dist = math.hypot(e.x - self.x, e.y - self.y)
             if d.min_range <= dist <= d.range:
                 cands.append(e)
-        if cands:
-            target = TARGETING[d.targeting](self, cands)
-            bullets.append(Bullet(self.x, self.y, target, d.damage, d.projectile_speed))
-            self.cooldown = d.cooldown
+        if not cands:
+            return
+        target = TARGETING[d.targeting](self, cands)
+        if d.splash_radius:
+            # Lead the target: flight time depends on where it will be.
+            tx, ty = target.x, target.y
+            for _ in range(2):
+                tx, ty = target.predict(math.hypot(tx - self.x, ty - self.y) / d.projectile_speed)
+            game.shells.append(Shell(self.x, self.y, tx, ty, d.damage,
+                                     d.projectile_speed, d.splash_radius))
+            self.aim = math.atan2(ty - self.y, tx - self.x)
+        else:
+            game.bullets.append(Bullet(self.x, self.y, target, d.damage, d.projectile_speed))
+            self.aim = math.atan2(target.y - self.y, target.x - self.x)
+        self.cooldown = d.cooldown
+
+    def _trigger(self, game):
+        d = self.defn
+        for e in game.enemies:
+            if e.alive and math.hypot(e.x - self.x, e.y - self.y) <= d.trigger_radius:
+                game.splash(self.x, self.y, d.splash_radius, d.damage)
+                game.events.append(("claymore", self.x, self.y, d.splash_radius))
+                self.spent = True
+                return
 
 
 class Game:
@@ -151,14 +256,12 @@ class Game:
         them here so they cannot silently behave like the basic version."""
         for key in self.map.towers:
             t = self.content.towers[key]
-            if t.single_use or t.splash_radius or t.placement != "ground":
-                raise NotImplementedError(f"tower {key!r} needs M2 mechanics")
             if t.targeting not in TARGETING:
                 raise ValueError(f"tower {key!r}: unknown targeting {t.targeting!r}")
         for wave in self.map.waves:
             for g in wave.groups:
                 if self.content.enemies[g.enemy].behavior not in BEHAVIORS:
-                    raise NotImplementedError(f"enemy {g.enemy!r} needs M2 behavior")
+                    raise ValueError(f"enemy {g.enemy!r}: no behavior {self.content.enemies[g.enemy].behavior!r}")
 
     def reset(self):
         self.supply = self.map.start_supply
@@ -167,6 +270,8 @@ class Game:
         self.towers = {}
         self.enemies = []
         self.bullets = []
+        self.shells = []
+        self.events = []  # (kind, x, y, radius) for the presentation layer, rebuilt each update
         self.groups = []  # live spawn state: [SpawnGroup, remaining, timer]
         self.state = "playing"  # playing | won | lost
 
@@ -186,21 +291,29 @@ class Game:
         self.wave += 1
         self.groups = [[g, g.count, g.delay] for g in wave.groups]
 
-    def try_build(self, col, row, tower_key):
-        if self.state != "playing":
-            return False
+    def placement_ok(self, col, row, tower_key):
+        """Is this tile a legal site for the tower, ignoring cost?"""
         if not (0 <= col < self.map.cols and 0 <= row < self.map.rows):
             return False
-        if tower_key not in self.map.towers:
+        if tower_key not in self.map.towers or (col, row) in self.towers:
+            return False
+        on_trail = (col, row) in self.path_tiles
+        return on_trail == (self.content.towers[tower_key].placement == "trail")
+
+    def try_build(self, col, row, tower_key):
+        if self.state != "playing" or not self.placement_ok(col, row, tower_key):
             return False
         tdef = self.content.towers[tower_key]
-        if (col, row) in self.path_tiles or (col, row) in self.towers:
-            return False
         if self.supply < tdef.cost:
             return False
         self.supply -= tdef.cost
         self.towers[(col, row)] = Tower(tdef, col, row, self.map.tile_size)
         return True
+
+    def splash(self, x, y, radius, damage):
+        for e in self.enemies:
+            if e.alive and math.hypot(e.x - x, e.y - y) <= radius:
+                e.hp -= damage
 
     def _spawn(self, dt):
         for state in self.groups:
@@ -215,16 +328,19 @@ class Game:
                 state[2] = g.interval
 
     def update(self, dt):
+        self.events = []  # cleared first so a finished game never replays old events
         if self.state != "playing":
             return
         was_active = self.wave_active
         self._spawn(dt)
         for e in self.enemies:
-            e.update(dt)
+            e.update(dt, self)
         for t in self.towers.values():
-            t.update(dt, self.enemies, self.bullets)
+            t.update(dt, self)
         for b in self.bullets:
             b.update(dt)
+        for sh in self.shells:
+            sh.update(dt, self)
         for e in self.enemies:
             if e.hp <= 0:
                 self.supply += e.defn.kill_reward
@@ -232,6 +348,13 @@ class Game:
                 self.integrity -= 1
         self.enemies = [e for e in self.enemies if e.alive]
         self.bullets = [b for b in self.bullets if not b.done]
+        self.shells = [sh for sh in self.shells if not sh.done]
+        for pos, t in list(self.towers.items()):
+            if t.spent:
+                del self.towers[pos]
+            elif t.hp <= 0:
+                del self.towers[pos]
+                self.events.append(("tower_lost", t.x, t.y, 0))
 
         if self.integrity <= 0:
             self.state = "lost"

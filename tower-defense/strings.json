@@ -1,18 +1,8 @@
 {
   "_readme": "Every line the player can read lives here. Edit text freely; keep the {placeholders}. kind is ui or narrative. Narrative entries stay status=draft until the consultant signs off, then set status=approved and fill reviewed_by.",
   "strings": {
-    "hud.status": {
-      "text": "Supply Points {supply}   Base Integrity {integrity}   Wave {wave}/{total}   {tower} {cost}{hint}",
-      "kind": "ui",
-      "status": "draft"
-    },
     "hud.hint_next_wave": {
-      "text": "  [SPACE: next wave]",
-      "kind": "ui",
-      "status": "draft"
-    },
-    "tower.mg_nest.name": {
-      "text": "Machine gun nest",
+      "text": "    [1-4: select]  [SPACE: next wave]",
       "kind": "ui",
       "status": "draft"
     },
@@ -39,6 +29,151 @@
     "end.restart": {
       "text": "Press R to restart",
       "kind": "ui",
+      "status": "draft"
+    },
+    "hud.line1": {
+      "text": "Supply Points {supply}    Base Integrity {integrity}    Wave {wave}/{total}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.line2": {
+      "text": "Position {n}: {tower}, cost {cost}{hint}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.hint_busy": {
+      "text": "    [1-4: select]",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.mg_nest.name": {
+      "text": "Machine gun nest",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.mortar.name": {
+      "text": "Mortar pit",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.claymore.name": {
+      "text": "Claymore line",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.flare.name": {
+      "text": "Flare tower",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.mg_nest.role": {
+      "text": "Fast fire, short range.",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.mortar.role": {
+      "text": "Slow splash fire, long range. Blind inside close range.",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.claymore.role": {
+      "text": "Placed on the trail. One burst, then gone.",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.flare.role": {
+      "text": "Deals no damage. Lights the area (active in M3).",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "enemy.scout.name": {
+      "text": "Scout",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "enemy.infantry.name": {
+      "text": "Infantry",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "enemy.sapper.name": {
+      "text": "Sapper",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "map.firebase.name": {
+      "text": "Firebase",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "map.firebase.label.north_treeline": {
+      "text": "NORTH TREELINE",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "map.firebase.label.south_approach": {
+      "text": "SOUTH APPROACH",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "map.firebase.label.wire": {
+      "text": "WIRE",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "map.firebase.label.base": {
+      "text": "FIREBASE",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "map.firebase.context": {
+      "text": "[DRAFT PLACEHOLDER] Historical context card for this map. Pending consultant review.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w1": {
+      "text": "Dusk. Contact, north treeline. One element on the trail.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w2": {
+      "text": "Dusk. Contact, north and south approaches.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w3": {
+      "text": "Dark. Fast movement on the south trail. Second element, north.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w4": {
+      "text": "Dark. Infantry on the north trail. Small group on the south trail moving toward our positions.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w5": {
+      "text": "Dark. Heavy movement, both trails. Fast elements leading.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w6": {
+      "text": "Dark. Large force, both trails. Small teams moving toward our positions.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w7": {
+      "text": "First light. Fast elements north. Teams moving on our positions from the south.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.firebase.w8": {
+      "text": "Dawn. Contact, both approaches. Last reported strength is the largest of the night.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "log.resupply": {
+      "text": "Resupply drop inbound. Supply points added.",
+      "kind": "narrative",
       "status": "draft"
     }
   }

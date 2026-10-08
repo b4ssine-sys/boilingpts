@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 PLACEMENTS = ("ground", "trail")
+KINDS = ("turret", "mine", "support")
 BEHAVIORS = ("follow_path", "seek_tower")
 TIMES_OF_DAY = ("day", "dusk", "dark", "dawn")
 
@@ -30,9 +31,20 @@ class TowerDef:
     placement: str = "ground"     # ground | trail
     single_use: bool = False
     targeting: str = "furthest"   # key into sim.TARGETING
+    kind: str = "turret"          # turret fires, mine bursts on contact, support does neither
+    hp: float = 60                # what sappers wear down
+    trigger_radius: float = 0     # mines: an enemy this close sets it off
+    light_radius: float = 0       # support: lit area, used by the M3 visibility system
 
     def __post_init__(self):
         _check(self.placement, PLACEMENTS, f"{self.key}.placement")
+        _check(self.kind, KINDS, f"{self.key}.kind")
+        if self.kind == "mine" and not (self.single_use and self.placement == "trail"
+                                        and self.trigger_radius > 0 and self.splash_radius > 0):
+            raise ValueError(f"{self.key}: a mine needs single_use, trail placement, "
+                             "trigger_radius and splash_radius")
+        if self.kind == "turret" and not (self.range > 0 and self.damage > 0):
+            raise ValueError(f"{self.key}: a turret needs range and damage")
 
 
 @dataclass(frozen=True)
@@ -43,9 +55,17 @@ class EnemyDef:
     behavior: str = "follow_path"  # follow_path | seek_tower
     visibility: str = "standard"  # profile name, defined by the M3 visibility system
     kill_reward: int = 10
+    # seek_tower only: leave the trail for any tower within aggro_range, then
+    # hit it every attack_interval seconds from within attack_range.
+    aggro_range: float = 0
+    attack_damage: float = 0
+    attack_interval: float = 1.0
+    attack_range: float = 20
 
     def __post_init__(self):
         _check(self.behavior, BEHAVIORS, f"{self.key}.behavior")
+        if self.behavior == "seek_tower" and not (self.aggro_range > 0 and self.attack_damage > 0):
+            raise ValueError(f"{self.key}: seek_tower needs aggro_range and attack_damage")
 
 
 @dataclass(frozen=True)
@@ -83,7 +103,10 @@ class MapDef:
     start_supply: int
     start_integrity: int
     resupply_bonus: int           # paid when a wave is cleared
-    towers: Tuple[str, ...] = ()  # tower keys buildable on this map
+    towers: Tuple[str, ...] = ()  # tower keys buildable on this map, in menu order
+    base: Tuple[int, int] = (0, 0)  # tile where the trails end
+    # (strings key, col, row, degrees) stamped on the map art
+    labels: Tuple[Tuple[str, float, float, float], ...] = ()
 
     @property
     def world_size(self):
