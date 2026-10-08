@@ -265,6 +265,11 @@
       "text": "R  RESTART",
       "kind": "ui",
       "status": "draft"
+    },
+    "hud.next_phase": {
+      "text": "NEXT: {tod}",
+      "kind": "ui",
+      "status": "draft"
     }
   }
 }

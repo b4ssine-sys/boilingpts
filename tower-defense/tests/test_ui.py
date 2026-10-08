@@ -293,6 +293,18 @@ class HudTests(unittest.TestCase):
         self.game.start_wave()
         self.assertIsNone(self.hud.hit_test(pos, self.game))
 
+    def test_hud_names_the_next_waves_time_of_day_before_it_is_called(self):
+        g = self.game
+        self.assertEqual(ui.Hud.next_wave_time(g), g.map.waves[0].time_of_day)
+        g.start_wave()
+        self.assertIsNone(ui.Hud.next_wave_time(g))          # mid-wave: shows the current one
+        for _ in range(60 * 90):
+            g.update(DT)
+            if not g.wave_active:
+                break
+        if g.state == "playing":
+            self.assertEqual(ui.Hud.next_wave_time(g), g.map.waves[1].time_of_day)
+
     def test_button_is_dead_after_the_last_wave_is_called(self):
         self.game.wave = len(self.game.map.waves)
         self.assertFalse(ui.Hud.can_call(self.game))
@@ -319,6 +331,8 @@ class HudTests(unittest.TestCase):
         self.assertLess(214 + max(h.f_small.size(s.get("hud.integrity"))[0], h.f_num.size("99")[0]), 420 - 10)
         wave = h.f_num.size(s.get("hud.wave_value", wave=8, total=8))[0]
         tod = max(h.f_label.size(s.get(f"time.{t}").upper())[0] for t in ("day", "dusk", "dark", "dawn"))
+        tod = max(tod, max(h.f_label.size(s.get("hud.next_phase", tod=s.get(f"time.{t}").upper()))[0]
+                           for t in ("dusk", "dark", "dawn")))
         self.assertLess(420 + wave + 10 + tod, h.button_rect.left - 8)
 
     def test_button_text_fits_its_tag(self):
@@ -363,6 +377,9 @@ class HudTests(unittest.TestCase):
                 self.hud.mouse = mouse
                 self.hud.update(DT, g)
                 self.hud.draw(self.screen, g, "flare")
+
+    def test_banner_timing_matches_the_spec(self):
+        self.assertEqual((ui.BANNER_IN, ui.BANNER_HOLD), (0.4, 2.2))
 
     def test_banner_and_end_card_do_not_draw_together(self):
         self.game.start_wave()

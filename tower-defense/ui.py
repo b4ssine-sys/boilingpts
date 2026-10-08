@@ -15,7 +15,7 @@ from layout import HUD_H, TRAY_H
 PAD = 8
 CARD_W, CARD_H, CARD_GAP = 100, 66, 6
 LOG_W, LOG_H = 352, 68
-BANNER_IN, BANNER_HOLD, BANNER_OUT = 0.25, 2.6, 0.5
+BANNER_IN, BANNER_HOLD, BANNER_OUT = 0.4, 2.2, 0.5
 TOWER_LOST_COOLDOWN = 4.0   # seconds between "position overrun" lines
 
 
@@ -196,6 +196,11 @@ class Hud:
             return ("next_wave", None)
         return None
 
+    @classmethod
+    def next_wave_time(cls, game):
+        """Time of day of the wave SPACE would call, or None if none can be called."""
+        return game.map.waves[game.wave].time_of_day if cls.can_call(game) else None
+
     @staticmethod
     def can_call(game):
         return (game.state == "playing" and not game.wave_active
@@ -295,8 +300,11 @@ class Hud:
         self._text(screen, self.f_small, s.get("hud.wave"), P.color("khaki"), (420, 3))
         val = s.get("hud.wave_value", wave=game.wave, total=len(game.map.waves))
         img = self._text(screen, self.f_num, val, P.color("paper"), (420, 15))
-        self._text(screen, self.f_label, s.get(f"time.{game.time_of_day}").upper(),
-                   P.color("amber"), (420 + img.get_width() + 10, 20))
+        # Between waves, name the next wave's time of day so the player can prepare for it.
+        nxt = self.next_wave_time(game)
+        tod = s.get("hud.next_phase", tod=s.get(f"time.{nxt}").upper()) if nxt else \
+            s.get(f"time.{game.time_of_day}").upper()
+        self._text(screen, self.f_label, tod, P.color("amber"), (420 + img.get_width() + 10, 20))
         # call-wave button: a paper tag that lifts a little under the cursor
         r = self.button_rect
         on = self.can_call(game)

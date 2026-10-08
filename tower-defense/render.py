@@ -114,12 +114,20 @@ class Renderer:
     def _draw_hover(self, screen, game, tdef, mouse_pos):
         ts = game.map.tile_size
         hc, hr = screen_to_tile(mouse_pos, ts)
-        if game.state != "playing" or not game.placement_ok(hc, hr, tdef.key):
+        if game.state != "playing" or not (0 <= hc < game.map.cols and 0 <= hr < game.map.rows):
+            return
+        cx, cy = world_to_screen(hc * ts + ts / 2, hr * ts + ts / 2)
+        rect = (hc * ts, hr * ts + HUD_H, ts, ts)
+        if not game.placement_ok(hc, hr, tdef.key):
+            # Illegal tile: a red ghost with a cross, and clicking does nothing.
+            red = P.color("clay")
+            pygame.draw.rect(screen, red, rect, 2)
+            pygame.draw.line(screen, red, (rect[0] + 8, rect[1] + 8), (rect[0] + ts - 8, rect[1] + ts - 8), 2)
+            pygame.draw.line(screen, red, (rect[0] + ts - 8, rect[1] + 8), (rect[0] + 8, rect[1] + ts - 8), 2)
             return
         ok = game.supply >= tdef.cost
         col = P.color("amber") if ok else P.color("clay")
-        cx, cy = world_to_screen(hc * ts + ts / 2, hr * ts + ts / 2)
-        pygame.draw.rect(screen, col, (hc * ts, hr * ts + HUD_H, ts, ts), 2)
+        pygame.draw.rect(screen, col, rect, 2)
         if tdef.range:
             pygame.draw.circle(screen, col, (cx, cy), tdef.range, 1)
         if tdef.min_range:  # blind zone

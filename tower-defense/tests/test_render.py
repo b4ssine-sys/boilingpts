@@ -159,6 +159,20 @@ class RenderSmokeTests(unittest.TestCase):
         self.renderer.draw(self.screen, g, "mg_nest", (0, 0))
         self.assertTrue([k for k in drawn if k.startswith("enemy.")])
 
+    def test_illegal_tiles_show_a_red_ghost_and_legal_ones_do_not(self):
+        import palette as P
+        g = self.game
+        ts = g.map.tile_size
+
+        def red_pixels(col, row, key):
+            self.screen.fill(P.color("ink"))
+            self.renderer.draw(self.screen, g, key, (col * ts + 20, 40 + row * ts + 20))
+            x, y = col * ts, 40 + row * ts
+            return sum(self.screen.get_at((x + i, y + 1))[:3] == P.color("clay") for i in range(ts))
+        self.assertGreater(red_pixels(0, 2, "mg_nest"), 20)       # ground tower on the trail
+        self.assertGreater(red_pixels(5, 5, "claymore"), 20)      # trail tower off the trail
+        self.assertEqual(red_pixels(5, 5, "mg_nest"), 0)          # legal and affordable: amber, not red
+
     def test_contact_marks_draw_without_error(self):
         from sim import Contact
         g = self.game
