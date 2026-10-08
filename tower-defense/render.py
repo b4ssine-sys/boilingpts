@@ -4,6 +4,7 @@ import math
 import pygame
 
 import palette as P
+from lighting import SIGHT_STRENGTH, Light, Lighting
 from mapart import bake_map
 
 HUD_H = 40
@@ -11,6 +12,8 @@ FPS = 60
 TOWER_PX = 34
 ENEMY_PX = 28
 EFFECT_TTL = 0.45
+# Short-lived lights: kind -> (radius, seconds). Muzzle flashes and claymore bursts.
+FLASHES = {"muzzle": (46, 0.12), "claymore": (120, 0.35)}
 
 
 def screen_size(game_map):
@@ -50,15 +53,44 @@ class Renderer:
         self.f_title = assets.font("label", 54)
         self.f_body = assets.font("log", 18)
         self.effects = []     # [kind, x, y, radius, age]
+        self.flashes = []     # [x, y, radius, ttl, age]
         self._heading = {}    # id(enemy) -> last angle
+        w, h = game_map.world_size
+        self.lighting = Lighting((w, h))
+        self.lighting.prewarm()
+        self.time = 0.0       # drives flare flicker; presentation only
 
     # ---- per-frame bookkeeping ----
     def update(self, dt, game):
+        self.time += dt
+        self.lighting.set_time_of_day(game.time_of_day, game.time_rule.sight_scale)
+        self.lighting.update(dt)
         for kind, x, y, radius in game.events:
-            self.effects.append([kind, x, y, radius, 0.0])
+            if kind in FLASHES:
+                r, ttl = FLASHES[kind]
+                self.flashes.append([x, y, r, ttl, 0.0])
+            if kind != "muzzle":
+                self.effects.append([kind, x, y, radius, 0.0])
         for fx in self.effects:
             fx[4] += dt
         self.effects = [fx for fx in self.effects if fx[4] < EFFECT_TTL]
+        for fl in self.flashes:
+            fl[4] += dt
+        self.flashes = [fl for fl in self.flashes if fl[4] < fl[3]]
+
+    def _lights(self, game):
+        """The same circles the simulation sees by, plus short-lived flashes."""
+        k = self.lighting.sight_scale
+        out = []
+        for x, y, r, kind in game.light_sources():
+            if kind == "sight":
+                out.append(Light(x, y + HUD_H, r * k, SIGHT_STRENGTH, False, True))
+            else:  # flare: flickers, so it is punched every frame
+                flick = 1 + 0.05 * math.sin(self.time * 5.1 + x * 0.013) + 0.03 * math.sin(self.time * 13.0 + y)
+                out.append(Light(x, y + HUD_H, r * k * flick, 1.0, True, False))
+        for x, y, r, ttl, age in self.flashes:
+            out.append(Light(x, y + HUD_H, r * (1 - 0.5 * age / ttl), 1.0, True, False))
+        return out
 
     def draw(self, screen, game, build_key, mouse_pos):
         m = game.map
@@ -68,7 +100,6 @@ class Renderer:
 
         screen.fill(P.color("ink"))
         screen.blit(self.background, (0, HUD_H))
-        self._draw_hover(screen, game, tdef, mouse_pos)
         self._draw_towers(screen, game)
         self._draw_enemies(screen, game)
         for b in game.bullets:
@@ -78,6 +109,9 @@ class Renderer:
             pygame.draw.circle(screen, P.color("ink"), (x, y), 4)
             pygame.draw.circle(screen, P.color("amber"), (x, y), 4, 1)
         self._draw_effects(screen)
+        self.lighting.render(screen, self._lights(game), HUD_H)
+        self._draw_contacts(screen, game)
+        self._draw_hover(screen, game, tdef, mouse_pos)
         self._draw_hud(screen, game, tdef, width)
         if game.state != "playing":
             self._draw_end_card(screen, game, width, height)
@@ -97,7 +131,8 @@ class Renderer:
         if tdef.min_range:  # blind zone
             pygame.draw.circle(screen, P.color("clay"), (cx, cy), tdef.min_range, 1)
         if tdef.light_radius:
-            pygame.draw.circle(screen, P.color("amber_hot"), (cx, cy), tdef.light_radius, 1)
+            pygame.draw.circle(screen, P.color("amber_hot"), (cx, cy),
+                               tdef.light_radius * self.lighting.sight_scale, 1)
 
     def _draw_towers(self, screen, game):
         for t in game.towers.values():
@@ -115,6 +150,8 @@ class Renderer:
         seen = set()
         for e in game.enemies:
             seen.add(id(e))
+            if not e.visible:
+                continue  # in the dark; only a contact mark may show where it was
             x, y = world_to_screen(e.x, e.y)
             tgt = e.tower_target or None
             if tgt is not None:
@@ -156,13 +193,25 @@ class Renderer:
             sx, sy = world_to_screen(x, y)
             screen.blit(surf, (sx - r - 2, sy - r - 2))
 
+    def _draw_contacts(self, screen, game):
+        """Faint rings where a hidden enemy was last seen. They fade as the contact goes stale."""
+        ttl = game.map.visibility.contact_ttl
+        for c in game.contacts:
+            fade = max(0.0, 1 - c.age / ttl)
+            surf = pygame.Surface((22, 22), pygame.SRCALPHA)
+            col = (*P.color("paper"), int(150 * fade))
+            pygame.draw.circle(surf, col, (11, 11), 9, 2)
+            pygame.draw.circle(surf, col, (11, 11), 2)
+            screen.blit(surf, (c.x - 11, c.y + HUD_H - 11))
+
     def _draw_hud(self, screen, game, tdef, width):
         s = self.strings
         pygame.draw.rect(screen, P.color("ink"), (0, 0, width, HUD_H))
         pygame.draw.line(screen, P.color("clay"), (0, HUD_H - 1), (width, HUD_H - 1))
         can_call = not game.wave_active and game.state == "playing"
         line1 = s.get("hud.line1", supply=game.supply, integrity=game.integrity,
-                      wave=game.wave, total=len(game.map.waves))
+                      wave=game.wave, total=len(game.map.waves),
+                      tod=s.get(f"time.{game.time_of_day}"))
         idx = game.map.towers.index(tdef.key) + 1
         line2 = s.get("hud.line2", n=idx, tower=s.get(f"tower.{tdef.key}.name"), cost=tdef.cost,
                       hint=s.get("hud.hint_next_wave" if can_call else "hud.hint_busy"))

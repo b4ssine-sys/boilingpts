@@ -5,6 +5,12 @@ decides where the map sits on screen. The renderer reads this state and never
 writes to it.
 """
 import math
+import random
+from collections import namedtuple
+
+
+# A hidden enemy's last known position, kept briefly so it can be marked and fired on.
+Contact = namedtuple("Contact", "x y fraction age")
 
 
 def build_path_tiles(corners):
@@ -99,6 +105,8 @@ class Enemy:
         self.reached_end = False
         self.tower_target = None
         self.attack_cooldown = 0.0
+        self.visible = True      # can the defence see it right now (set each update)
+        self.last_seen = None    # (x, y, fraction, clock) the last time it was visible
 
     @property
     def alive(self):
@@ -131,11 +139,12 @@ class Enemy:
 
 
 class Bullet:
-    def __init__(self, x, y, enemy, damage, speed):
+    def __init__(self, x, y, enemy, damage, speed, hits=True):
         self.x, self.y = x, y
         self.enemy = enemy
         self.damage = damage
         self.speed = speed
+        self.hits = hits  # decided at the muzzle; a miss still flies to the target
         self.done = False
 
     def update(self, dt):
@@ -146,7 +155,8 @@ class Bullet:
         dist = math.hypot(dx, dy)
         step = self.speed * dt
         if dist <= step:
-            self.enemy.hp -= self.damage
+            if self.hits:
+                self.enemy.hp -= self.damage
             self.done = True
         else:
             self.x += dx / dist * step
@@ -207,26 +217,45 @@ class Tower:
         d = self.defn
         cands = []
         for e in game.enemies:
-            if not e.alive:
+            if not (e.alive and e.visible):
                 continue
             dist = math.hypot(e.x - self.x, e.y - self.y)
             if d.min_range <= dist <= d.range:
                 cands.append(e)
-        if not cands:
-            return
-        target = TARGETING[d.targeting](self, cands)
-        if d.splash_radius:
-            # Lead the target: flight time depends on where it will be.
-            tx, ty = target.x, target.y
-            for _ in range(2):
-                tx, ty = target.predict(math.hypot(tx - self.x, ty - self.y) / d.projectile_speed)
-            game.shells.append(Shell(self.x, self.y, tx, ty, d.damage,
-                                     d.projectile_speed, d.splash_radius))
-            self.aim = math.atan2(ty - self.y, tx - self.x)
+        hit_chance, scatter = game.shot_quality(self)
+        if cands:
+            target = TARGETING[d.targeting](self, cands)
+            if d.splash_radius:
+                # Lead the target: flight time depends on where it will be.
+                tx, ty = target.x, target.y
+                for _ in range(2):
+                    tx, ty = target.predict(math.hypot(tx - self.x, ty - self.y) / d.projectile_speed)
+                self._lob(game, tx, ty, scatter)
+            else:
+                hits = game.rng.random() < hit_chance
+                game.bullets.append(Bullet(self.x, self.y, target, d.damage, d.projectile_speed, hits))
+                self.aim = math.atan2(target.y - self.y, target.x - self.x)
+        elif d.splash_radius:
+            # Nothing in sight: fire blind on the freshest contact in reach.
+            reach = [c for c in game.contacts
+                     if d.min_range <= math.hypot(c.x - self.x, c.y - self.y) <= d.range]
+            if not reach:
+                return
+            c = max(reach, key=lambda c: c.fraction)
+            self._lob(game, c.x, c.y, scatter)
         else:
-            game.bullets.append(Bullet(self.x, self.y, target, d.damage, d.projectile_speed))
-            self.aim = math.atan2(target.y - self.y, target.x - self.x)
+            return
+        game.events.append(("muzzle", self.x, self.y, 0))
         self.cooldown = d.cooldown
+
+    def _lob(self, game, tx, ty, scatter):
+        d = self.defn
+        if scatter:
+            ang = game.rng.uniform(0, math.tau)
+            off = scatter * math.sqrt(game.rng.random())
+            tx, ty = tx + math.cos(ang) * off, ty + math.sin(ang) * off
+        game.shells.append(Shell(self.x, self.y, tx, ty, d.damage, d.projectile_speed, d.splash_radius))
+        self.aim = math.atan2(ty - self.y, tx - self.x)
 
     def _trigger(self, game):
         d = self.defn
@@ -239,8 +268,9 @@ class Tower:
 
 
 class Game:
-    def __init__(self, content, map_key):
+    def __init__(self, content, map_key, seed=0):
         self.content = content
+        self.seed = seed
         self.map = content.maps[map_key]
         self._check_supported()
         ts = self.map.tile_size
@@ -274,6 +304,10 @@ class Game:
         self.events = []  # (kind, x, y, radius) for the presentation layer, rebuilt each update
         self.groups = []  # live spawn state: [SpawnGroup, remaining, timer]
         self.state = "playing"  # playing | won | lost
+        self.time_of_day = "day"  # follows the most recently started wave
+        self.clock = 0.0
+        self.contacts = []  # Contact tuples for hidden enemies seen a moment ago
+        self.rng = random.Random(self.seed)  # shot accuracy; seeded so runs repeat
 
     @property
     def wave_active(self):
@@ -289,6 +323,7 @@ class Game:
             return
         wave = self.map.waves[self.wave]
         self.wave += 1
+        self.time_of_day = wave.time_of_day
         self.groups = [[g, g.count, g.delay] for g in wave.groups]
 
     def placement_ok(self, col, row, tower_key):
@@ -309,6 +344,61 @@ class Game:
         self.supply -= tdef.cost
         self.towers[(col, row)] = Tower(tdef, col, row, self.map.tile_size)
         return True
+
+    # ---- light and visibility ----
+    @property
+    def time_rule(self):
+        return self.map.visibility.rule(self.time_of_day)
+
+    def light_sources(self):
+        """Every circle the defence sees by, unscaled: (x, y, radius, kind).
+        kind is "sight" (towers and the base) or "light" (flares)."""
+        ts = self.map.tile_size
+        out = []
+        bx, by = tile_center(*self.map.base, ts)
+        if self.map.visibility.base_sight:
+            out.append((bx, by, self.map.visibility.base_sight, "sight"))
+        for t in self.towers.values():
+            if t.defn.sight_radius:
+                out.append((t.x, t.y, t.defn.sight_radius, "sight"))
+            if t.defn.light_radius:
+                out.append((t.x, t.y, t.defn.light_radius, "light"))
+        return out
+
+    def is_lit(self, x, y):
+        """Standing in a flare's light (always true in daylight)."""
+        scale = self.time_rule.sight_scale
+        if scale == 0:
+            return True
+        return any(math.hypot(x - sx, y - sy) <= r * scale
+                   for sx, sy, r, kind in self.light_sources() if kind == "light")
+
+    def shot_quality(self, tower):
+        """(hit chance, mortar scatter) for a shooter, given the time of day and flares."""
+        rule = self.time_rule
+        if rule.sight_scale == 0 or self.is_lit(tower.x, tower.y):
+            return 1.0, 0.0
+        return rule.hit_chance, rule.scatter
+
+    def _update_visibility(self):
+        scale = self.time_rule.sight_scale
+        ttl = self.map.visibility.contact_ttl
+        sources = self.light_sources()
+        contacts = []
+        for e in self.enemies:
+            if not e.alive:
+                continue
+            if scale == 0:
+                e.visible = True
+            else:
+                k = scale * e.defn.visibility
+                e.visible = any(math.hypot(e.x - sx, e.y - sy) <= r * k for sx, sy, r, _ in sources)
+            if e.visible:
+                e.last_seen = (e.x, e.y, e.fraction, self.clock)
+            elif e.last_seen and self.clock - e.last_seen[3] <= ttl:
+                x, y, frac, t = e.last_seen
+                contacts.append(Contact(x, y, frac, self.clock - t))
+        self.contacts = contacts
 
     def splash(self, x, y, radius, damage):
         for e in self.enemies:
@@ -332,9 +422,11 @@ class Game:
         if self.state != "playing":
             return
         was_active = self.wave_active
+        self.clock += dt
         self._spawn(dt)
         for e in self.enemies:
             e.update(dt, self)
+        self._update_visibility()
         for t in self.towers.values():
             t.update(dt, self)
         for b in self.bullets:

@@ -14,6 +14,7 @@ Layout:
     palette.py   every colour token
     assets.py    sprites and fonts by key, with drawn fallbacks
     mapart.py    bakes the static field-map background
+    lighting.py  darkness overlay and light glows
     render.py    drawing, no state changes
 """
 import sys

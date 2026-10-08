@@ -8,16 +8,16 @@ TOWERS = {
     t.key: t for t in (
         # Fast, light, short range. The reliable all-rounder.
         TowerDef(key="mg_nest", cost=50, range=110, cooldown=0.25, damage=4,
-                 projectile_speed=500, hp=60),
+                 projectile_speed=500, hp=60, sight_radius=105),
         # Slow shells with splash. Cannot hit anything inside min_range.
         TowerDef(key="mortar", cost=100, range=230, min_range=80, cooldown=2.0,
-                 damage=25, splash_radius=45, projectile_speed=220, hp=80),
+                 damage=25, splash_radius=45, projectile_speed=220, hp=80, sight_radius=100),
         # Sits on the trail. One burst when an enemy walks into it, then gone.
         TowerDef(key="claymore", cost=30, range=0, cooldown=0, damage=60,
                  splash_radius=50, placement="trail", single_use=True,
                  kind="mine", trigger_radius=24, hp=1),
-        # Deals no damage. Lights the area for the M3 visibility system, so
-        # light_radius has no effect until then.
+        # Deals no damage. Its light lets every tower see and hit enemies
+        # inside the pool, and steadies the aim of towers standing in it.
         TowerDef(key="flare", cost=40, range=0, cooldown=0, damage=0,
                  kind="support", light_radius=170, hp=40),
     )
@@ -25,9 +25,9 @@ TOWERS = {
 
 ENEMIES = {
     e.key: e for e in (
-        EnemyDef(key="scout", hp=30, speed=115, kill_reward=5),
-        EnemyDef(key="infantry", hp=80, speed=65, kill_reward=6),
-        EnemyDef(key="sapper", hp=60, speed=75, kill_reward=10, behavior="seek_tower",
+        EnemyDef(key="scout", hp=27, speed=115, kill_reward=5, visibility=0.85),
+        EnemyDef(key="infantry", hp=72, speed=65, kill_reward=6),
+        EnemyDef(key="sapper", hp=54, speed=75, kill_reward=10, behavior="seek_tower", visibility=0.7,
                  aggro_range=130, attack_damage=20, attack_interval=1.0, attack_range=22),
     )
 }

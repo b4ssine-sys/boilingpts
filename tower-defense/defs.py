@@ -34,7 +34,8 @@ class TowerDef:
     kind: str = "turret"          # turret fires, mine bursts on contact, support does neither
     hp: float = 60                # what sappers wear down
     trigger_radius: float = 0     # mines: an enemy this close sets it off
-    light_radius: float = 0       # support: lit area, used by the M3 visibility system
+    sight_radius: float = 0       # at night this tower sees enemies this close
+    light_radius: float = 0       # flares: lit area that also steadies nearby fire at night
 
     def __post_init__(self):
         _check(self.placement, PLACEMENTS, f"{self.key}.placement")
@@ -48,13 +49,44 @@ class TowerDef:
 
 
 @dataclass(frozen=True)
+class TimeRule:
+    """How a time of day changes the fight."""
+    sight_scale: float   # multiplies every sight and light radius; 0 means no limit (full daylight)
+    hit_chance: float    # chance a gun round hits when the shooter is not lit by a flare
+    scatter: float       # mortar aim error, in world units, when the shooter is not lit
+
+
+# Chosen so dusk and dawn are easier than the dark, and day is unrestricted.
+DEFAULT_TIME_RULES = (
+    ("day", TimeRule(sight_scale=0, hit_chance=1.0, scatter=0)),
+    ("dusk", TimeRule(sight_scale=2.0, hit_chance=0.90, scatter=12)),
+    ("dark", TimeRule(sight_scale=1.2, hit_chance=0.65, scatter=35)),
+    ("dawn", TimeRule(sight_scale=1.7, hit_chance=0.85, scatter=20)),
+)
+
+
+@dataclass(frozen=True)
+class VisibilityRules:
+    by_time: Tuple[Tuple[str, TimeRule], ...] = DEFAULT_TIME_RULES
+    base_sight: float = 110       # the base itself always sees this far
+    contact_ttl: float = 4.0      # seconds a lost contact stays on the map and can be fired on
+
+    def __post_init__(self):
+        if {t for t, _ in self.by_time} != set(TIMES_OF_DAY):
+            raise ValueError(f"by_time must cover exactly {TIMES_OF_DAY}")
+
+    def rule(self, time_of_day):
+        return dict(self.by_time)[time_of_day]
+
+
+@dataclass(frozen=True)
 class EnemyDef:
     key: str
     hp: float
     speed: float                  # world units per second
     behavior: str = "follow_path"  # follow_path | seek_tower
-    visibility: str = "standard"  # profile name, defined by the M3 visibility system
     kill_reward: int = 10
+    visibility: float = 1.0       # 1 = normal; below 1 a light must be closer to reveal it
     # seek_tower only: leave the trail for any tower within aggro_range, then
     # hit it every attack_interval seconds from within attack_range.
     aggro_range: float = 0
@@ -64,6 +96,8 @@ class EnemyDef:
 
     def __post_init__(self):
         _check(self.behavior, BEHAVIORS, f"{self.key}.behavior")
+        if not 0 < self.visibility <= 1.5:
+            raise ValueError(f"{self.key}: visibility must be in (0, 1.5]")
         if self.behavior == "seek_tower" and not (self.aggro_range > 0 and self.attack_damage > 0):
             raise ValueError(f"{self.key}: seek_tower needs aggro_range and attack_damage")
 
@@ -105,6 +139,7 @@ class MapDef:
     resupply_bonus: int           # paid when a wave is cleared
     towers: Tuple[str, ...] = ()  # tower keys buildable on this map, in menu order
     base: Tuple[int, int] = (0, 0)  # tile where the trails end
+    visibility: VisibilityRules = VisibilityRules()
     # (strings key, col, row, degrees) stamped on the map art
     labels: Tuple[Tuple[str, float, float, float], ...] = ()
 

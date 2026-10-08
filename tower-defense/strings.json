@@ -32,7 +32,7 @@
       "status": "draft"
     },
     "hud.line1": {
-      "text": "Supply Points {supply}    Base Integrity {integrity}    Wave {wave}/{total}",
+      "text": "Supply Points {supply}    Base Integrity {integrity}    Wave {wave}/{total}    {tod}",
       "kind": "ui",
       "status": "draft"
     },
@@ -82,7 +82,7 @@
       "status": "draft"
     },
     "tower.flare.role": {
-      "text": "Deals no damage. Lights the area (active in M3).",
+      "text": "Deals no damage. Lights a wide area so every tower can see there, and steadies fire from towers inside it at night.",
       "kind": "ui",
       "status": "draft"
     },
@@ -174,6 +174,26 @@
     "log.resupply": {
       "text": "Resupply drop inbound. Supply points added.",
       "kind": "narrative",
+      "status": "draft"
+    },
+    "time.day": {
+      "text": "Day",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "time.dusk": {
+      "text": "Dusk",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "time.dark": {
+      "text": "Night",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "time.dawn": {
+      "text": "Dawn",
+      "kind": "ui",
       "status": "draft"
     }
   }

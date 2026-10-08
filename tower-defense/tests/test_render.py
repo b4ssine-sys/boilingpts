@@ -128,10 +128,11 @@ class RenderSmokeTests(unittest.TestCase):
             self.assertTrue(g.try_build(*pos, key))
         for _ in range(len(g.map.waves)):
             g.start_wave()
-            for _ in range(60 * 40):
+            for i in range(60 * 40):
                 g.update(1 / 60)
                 self.renderer.update(1 / 60, g)
-                self.renderer.draw(self.screen, g, g.map.towers[1], (330, 160))
+                if i % 6 == 0:   # drawing is the slow part; sampling still hits every state
+                    self.renderer.draw(self.screen, g, g.map.towers[1], (330, 160))
                 if not g.wave_active or g.state != "playing":
                     break
         for state in ("won", "lost"):
@@ -140,12 +141,42 @@ class RenderSmokeTests(unittest.TestCase):
 
     def test_hud_lines_fit_the_window(self):
         s = self.renderer.strings
-        l1 = s.get("hud.line1", supply=99999, integrity=10, wave=8, total=8)
+        l1 = s.get("hud.line1", supply=99999, integrity=10, wave=8, total=8, tod=s.get("time.dark"))
         for key in self.game.map.towers:
             l2 = s.get("hud.line2", n=4, tower=s.get(f"tower.{key}.name"), cost=100,
                        hint=s.get("hud.hint_next_wave"))
             self.assertLessEqual(self.renderer.f_hud2.size(l2)[0] + 10, self.screen.get_width())
         self.assertLessEqual(self.renderer.f_hud.size(l1)[0] + 10, self.screen.get_width())
+
+    def test_unseen_enemies_are_not_drawn_but_contacts_are(self):
+        g = self.game
+        g.time_of_day = "dark"
+        g.start_wave()
+        for _ in range(60 * 3):
+            g.update(1 / 60)
+        self.assertTrue(g.enemies)
+        drawn = []
+        real = self.renderer.assets.rotated
+        self.renderer.assets.rotated = lambda key, *a, **k: (drawn.append(key), real(key, *a, **k))[1]
+        for e in g.enemies:
+            e.visible = False
+        self.renderer.draw(self.screen, g, "mg_nest", (0, 0))
+        self.assertFalse([k for k in drawn if k.startswith("enemy.")])
+        for e in g.enemies:
+            e.visible = True
+        self.renderer.draw(self.screen, g, "mg_nest", (0, 0))
+        self.assertTrue([k for k in drawn if k.startswith("enemy.")])
+
+    def test_contact_marks_draw_without_error(self):
+        from sim import Contact
+        g = self.game
+        g.contacts = [Contact(300, 200, 0.4, 1.0), Contact(500, 300, 0.6, 3.9)]
+        self.renderer.draw(self.screen, g, "mg_nest", (0, 0))
+
+    def test_hud_names_the_time_of_day(self):
+        s = self.renderer.strings
+        for tod in ("day", "dusk", "dark", "dawn"):
+            self.assertTrue(s.get(f"time.{tod}"))
 
     def test_wrap_respects_width(self):
         f = self.renderer.f_body

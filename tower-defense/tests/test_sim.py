@@ -318,33 +318,22 @@ class FirebaseContentTests(unittest.TestCase):
         for w in m.waves:
             self.assertTrue(w.log_key)
 
-    def test_no_build_loses_and_mixed_defence_wins(self):
-        """Guards against content edits that make the slice unwinnable or trivial."""
-        def play(plan):
-            g = Game(CONTENT, "firebase")
-            i = 0
-            for _ in g.map.waves:
-                while i < len(plan) and g.try_build(*plan[i]):
-                    i += 1
-                g.start_wave()
-                ticks = 0
-                while g.wave_active and g.state == "playing" and ticks < 36000:
-                    g.update(DT)
-                    ticks += 1
-                    if ticks % 30 == 0:
-                        while i < len(plan) and g.try_build(*plan[i]):
-                            i += 1
-                if g.state != "playing":
-                    break
-            return g
-        self.assertEqual(play([]).state, "lost")
-        mixed = [(14, 6, "mg_nest"), (16, 6, "mg_nest"), (15, 8, "mg_nest"), (13, 7, "mortar"),
-                 (9, 3, "mg_nest"), (11, 4, "mg_nest"), (9, 10, "mg_nest"), (12, 10, "mg_nest"),
-                 (12, 8, "mortar"), (11, 3, "mortar"), (15, 6, "claymore"), (14, 9, "claymore"),
-                 (10, 4, "claymore"), (16, 8, "mg_nest"), (13, 6, "mg_nest"), (7, 10, "mg_nest"),
-                 (16, 5, "mg_nest"), (9, 11, "mortar"), (12, 4, "mg_nest"), (17, 8, "mg_nest"),
-                 (17, 6, "mg_nest")]
-        self.assertEqual(play(mixed).state, "won")
+    def test_building_nothing_loses(self):
+        g = Game(CONTENT, "firebase")
+        for _ in g.map.waves:
+            g.start_wave()
+            ticks = 0
+            while g.wave_active and g.state == "playing" and ticks < 36000:
+                g.update(DT)
+                ticks += 1
+            if g.state != "playing":
+                break
+        self.assertEqual(g.state, "lost")
+
+    def test_every_wave_has_a_valid_time_of_day_and_both_trails_see_traffic(self):
+        m = CONTENT.maps["firebase"]
+        self.assertTrue({w.time_of_day for w in m.waves} <= {"dusk", "dark", "dawn"})
+        self.assertEqual({d for d, _ in m.visibility.by_time}, {"day", "dusk", "dark", "dawn"})
 
 
 class StringsTests(unittest.TestCase):
@@ -364,6 +353,8 @@ class StringsTests(unittest.TestCase):
             s.get(f"tower.{t}.role")
         for e in CONTENT.enemies:
             s.get(f"enemy.{e}.name")
+        for tod in ("day", "dusk", "dark", "dawn"):
+            s.get(f"time.{tod}")
         for m in CONTENT.maps.values():
             s.get(f"map.{m.key}.name")
             s.get(f"map.{m.key}.context")

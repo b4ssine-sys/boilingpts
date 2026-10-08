@@ -63,7 +63,16 @@ target machine misses 60 FPS. No shader backend is needed.
 - Gameplay rules: hiding enemies outside light, contact marks, mortars firing
   on last-known positions. Only the cost of the visibility test was measured.
 
-## Next steps to promote this
+## Status: promoted
+Built as `lighting.py` (M3/G4). All four steps below are done, plus two changes the real
+thing forced: the glow became an alpha-blended amber wash in three fixed strength levels
+(additive glow blew the scene out at dusk, and mixing surface alpha with per-pixel alpha was
+3-4x slower), and every gradient sprite is built at load (about 0.5 s) because radii sweep
+through many buckets during a tint transition and creating sprites mid-frame caused hitches.
+Measured in the real game over a full eight-wave run: whole frame (sim, update, draw) mean
+3.95 ms, p99 7.4 ms, max 11.9 ms.
+
+## Next steps to promote this (all done)
 1. Move `GradientCache` and `Overlay` into a `lighting.py` used by `render.py`,
    driven by `WaveDef.time_of_day` and `palette.TINTS`.
 2. Add `visible(enemy)` to the simulation, sharing light radii with the
