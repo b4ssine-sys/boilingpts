@@ -1,16 +1,20 @@
-"""Asset loading by key, with a drawn fallback so a missing file never crashes.
+"""Asset loading by key, with painted fallbacks so a missing file never crashes.
 
-Sprites: assets/sprites/<key>.png, for example tower.mg_nest.png. Art faces
-east (angle 0) so the renderer can rotate it toward a target. Fonts:
-assets/fonts/<role>.ttf for the roles "log" (typewriter) and "label" (stencil).
-When the concept artist delivers a file it is picked up by name with no code
-change; until then the fallbacks below stand in.
+Sprites: assets/sprites/<key>.png replaces the drawing in art.py. Keys:
+    tower.<tower>.base          static layer (sandbags, crates, structure)
+    tower.<tower>.gun           rotating layer (mg_nest and mortar only)
+    enemy.<enemy>.0 / .1        two walk frames, facing east
+Art faces east (angle 0). Towers and enemies stand on the ground point given by
+art.ANCHOR, so a replacement PNG must keep its feet or foundation there.
+Fonts: assets/fonts/<role>.ttf for the roles "log" (typewriter) and "label"
+(stencil); system fonts stand in until licensed ones are chosen.
 """
+import math
 import os
 
 import pygame
 
-import palette as P
+import art
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
@@ -19,121 +23,129 @@ _SYSFONTS = {"log": "couriernew,courier,dejavusansmono,monospace",
              "label": "impact,arialblack,dejavusans,arial"}
 
 
-def _fb_mg_nest(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    c = s / 2
-    pygame.draw.circle(surf, P.color("khaki"), (c, c), s * 0.46)
-    pygame.draw.circle(surf, P.color("ink"), (c, c), s * 0.46, max(1, s // 16))
-    pygame.draw.circle(surf, P.color("olive_drab"), (c, c), s * 0.30)
-    pygame.draw.rect(surf, P.color("ink"), (c, c - s * 0.06, s * 0.46, s * 0.12))
-    return surf
+def _registry():
+    reg = {}
+    for k, fn in art.BASE_BUILDERS.items():
+        reg[f"tower.{k}.base"] = fn
+    for k, fn in art.GUN_BUILDERS.items():
+        reg[f"tower.{k}.gun"] = fn
+    for k, fn in art.FRONT_BUILDERS.items():
+        reg[f"tower.{k}.front"] = fn
+    for k, fn in art.ENEMY_BUILDERS.items():
+        for frame in (0, 1):
+            reg[f"enemy.{k}.{frame}"] = (lambda fn=fn, frame=frame: fn(frame))
+    return reg
 
 
-def _fb_mortar(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    c = s / 2
-    pygame.draw.circle(surf, P.color("jungle_dark"), (c, c), s * 0.46)
-    pygame.draw.circle(surf, P.color("khaki"), (c, c), s * 0.46, max(2, s // 12))
-    pygame.draw.circle(surf, P.color("ink"), (c, c), s * 0.20)
-    pygame.draw.rect(surf, P.color("olive_drab"), (c, c - s * 0.09, s * 0.30, s * 0.18))
-    return surf
+REGISTRY = _registry()
 
 
-def _fb_claymore(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    for i in (-1, 0, 1):
-        r = pygame.Rect(0, 0, s * 0.18, s * 0.34)
-        r.center = (s / 2, s / 2 + i * s * 0.26)
-        pygame.draw.rect(surf, P.color("olive_drab"), r, border_radius=2)
-        pygame.draw.rect(surf, P.color("ink"), r, 1, border_radius=2)
-    return surf
-
-
-def _fb_flare(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    c = s / 2
-    pygame.draw.circle(surf, P.color("olive_drab"), (c, c), s * 0.30)
-    pygame.draw.circle(surf, P.color("ink"), (c, c), s * 0.30, 1)
-    pygame.draw.circle(surf, P.color("amber"), (c, c), s * 0.16)
-    pygame.draw.circle(surf, P.color("amber_hot"), (c, c), s * 0.07)
-    return surf
-
-
-def _fb_scout(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    r = pygame.Rect(0, 0, s * 0.62, s * 0.30)
-    r.center = (s / 2, s / 2)
-    pygame.draw.ellipse(surf, P.color("clay"), r)
-    pygame.draw.ellipse(surf, P.color("ink"), r, 1)
-    return surf
-
-
-def _fb_infantry(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    pygame.draw.circle(surf, P.color("clay"), (s / 2, s / 2), s * 0.32)
-    pygame.draw.circle(surf, P.color("ink"), (s / 2, s / 2), s * 0.32, 1)
-    return surf
-
-
-def _fb_sapper(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    pack = pygame.Rect(0, 0, s * 0.30, s * 0.36)
-    pack.center = (s * 0.30, s / 2)
-    pygame.draw.rect(surf, P.color("jungle_dark"), pack, border_radius=2)
-    pygame.draw.circle(surf, P.color("clay"), (s * 0.55, s / 2), s * 0.26)
-    pygame.draw.circle(surf, P.color("ink"), (s * 0.55, s / 2), s * 0.26, 1)
-    return surf
-
-
-def _fb_unknown(s):
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    pygame.draw.rect(surf, P.color("clay"), (s * 0.2, s * 0.2, s * 0.6, s * 0.6), 2)
-    pygame.draw.line(surf, P.color("clay"), (s * 0.2, s * 0.2), (s * 0.8, s * 0.8), 2)
-    return surf
-
-
-FALLBACKS = {
-    "tower.mg_nest": _fb_mg_nest, "tower.mortar": _fb_mortar,
-    "tower.claymore": _fb_claymore, "tower.flare": _fb_flare,
-    "enemy.scout": _fb_scout, "enemy.infantry": _fb_infantry, "enemy.sapper": _fb_sapper,
-}
+def _unknown():
+    pen = art.Pen(24, 24)
+    pen.rect(5, 5, 14, 14, "clay", width=1.4)
+    pen.line((5, 5), (19, 19), "clay", 1.4)
+    return pen.done(0)
 
 
 class Assets:
     def __init__(self, root=ASSET_DIR):
         self.root = root
-        self._images = {}
+        self._sprites = {}
+        self._scaled = {}
         self._rotated = {}
+        self._icons = {}
         self._fonts = {}
 
-    def image(self, key, size):
-        """Square sprite at `size` pixels, from file if present, else drawn."""
-        ck = (key, size)
-        if ck not in self._images:
-            self._images[ck] = self._load(key, size)
-        return self._images[ck]
+    def has(self, key):
+        return key in REGISTRY or os.path.isfile(os.path.join(self.root, "sprites", f"{key}.png"))
 
-    def _load(self, key, size):
+    def sprite(self, key):
+        """The sprite at its native size, from file if present, else painted."""
+        if key not in self._sprites:
+            self._sprites[key] = self._load(key)
+        return self._sprites[key]
+
+    def _load(self, key):
         path = os.path.join(self.root, "sprites", f"{key}.png")
         if os.path.isfile(path):
             try:
                 img = pygame.image.load(path)
-                img = img.convert_alpha() if pygame.display.get_surface() else img
-                return pygame.transform.smoothscale(img, (size, size))
+                return img.convert_alpha() if pygame.display.get_surface() else img
             except pygame.error:
                 pass  # a corrupt file falls back like a missing one
-        # Draw at 2x and scale down for smoother edges.
-        big = FALLBACKS.get(key, _fb_unknown)(size * 2)
-        return pygame.transform.smoothscale(big, (size, size))
+        build = REGISTRY.get(key, _unknown)
+        return build()
 
-    def rotated(self, key, size, radians, bucket=12):
+    def scaled(self, key, scale):
+        if scale == 1.0:
+            return self.sprite(key)
+        ck = (key, scale)
+        if ck not in self._scaled:
+            s = self.sprite(key)
+            self._scaled[ck] = pygame.transform.smoothscale(
+                s, (max(1, round(s.get_width() * scale)), max(1, round(s.get_height() * scale))))
+        return self._scaled[ck]
+
+    def flipped(self, key, scale=1.0, flip=False):
+        """Scaled sprite, mirrored left to right when `flip` (units that walk west)."""
+        if not flip:
+            return self.scaled(key, scale)
+        ck = (key, scale, "flip")
+        if ck not in self._scaled:
+            self._scaled[ck] = pygame.transform.flip(self.scaled(key, scale), True, False)
+        return self._scaled[ck]
+
+    def rotated(self, key, radians, scale=1.0, bucket=10):
         """Sprite turned to `radians` (0 = east, y down), cached in `bucket`-degree steps."""
-        deg = -radians * 180 / 3.14159265
-        step = round(deg / bucket) * bucket % 360
-        ck = (key, size, step)
+        step = round((-radians * 180 / math.pi) / bucket) * bucket % 360
+        ck = (key, scale, step)
         if ck not in self._rotated:
-            self._rotated[ck] = pygame.transform.rotate(self.image(key, size), step)
+            self._rotated[ck] = pygame.transform.rotate(self.scaled(key, scale), step)
         return self._rotated[ck]
+
+    def composed(self, tower_key, scale, aim=0.0):
+        """Base, gun and front wall flattened into one picture (cards and the placement preview)."""
+        base = self.scaled(f"tower.{tower_key}.base", scale).copy()
+        gun_key = f"tower.{tower_key}.gun"
+        ax, ay = art.ANCHOR["tower"]
+        if self.has(gun_key):
+            gun = self.rotated(gun_key, aim, scale)
+            mx, my = art.MOUNT[tower_key]
+            base.blit(gun, gun.get_rect(center=(base.get_width() * ax + mx * scale,
+                                                base.get_height() * ay + my * scale)))
+        front_key = f"tower.{tower_key}.front"
+        if self.has(front_key):
+            base.blit(self.scaled(front_key, scale), (0, 0))
+        return base
+
+    def icon(self, tower_key, height, max_width=None):
+        """A tower as a card illustration: base and gun together, scaled to fit
+        `height` and, if given, `max_width`."""
+        ck = (tower_key, height, max_width)
+        if ck not in self._icons:
+            base = self.composed(tower_key, 1.0)
+            rect = base.get_bounding_rect()
+            base = base.subsurface(rect).copy()
+            k = height / base.get_height()
+            if max_width:
+                k = min(k, max_width / base.get_width())
+            height = max(1, round(base.get_height() * k))
+            self._icons[ck] = pygame.transform.smoothscale(
+                base, (max(1, round(base.get_width() * k)), height))
+        return self._icons[ck]
+
+    def prewarm(self, tower_scale, enemy_scale):
+        """Build every scaled, mirrored and rotated variant a session can ask for,
+        so nothing is created mid-frame."""
+        for key in REGISTRY:
+            if key.startswith("enemy."):
+                self.flipped(key, enemy_scale, False)
+                self.flipped(key, enemy_scale, True)
+            elif key.endswith(".base") or key.endswith(".front"):
+                self.scaled(key, tower_scale)
+            elif key.endswith(".gun"):
+                for deg in range(0, 360, 10):
+                    self.rotated(key, -math.radians(deg), tower_scale)
 
     def font(self, role, size):
         ck = (role, size)

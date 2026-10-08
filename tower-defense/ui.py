@@ -5,6 +5,7 @@ game. Everything the player reads comes from the strings table, every colour
 from the palette, every sound goes through audio.play.
 """
 import math
+import random
 
 import pygame
 
@@ -16,7 +17,50 @@ PAD = 8
 CARD_W, CARD_H, CARD_GAP = 100, 66, 6
 LOG_W, LOG_H = 352, 68
 BANNER_IN, BANNER_HOLD, BANNER_OUT = 0.4, 2.2, 0.5
+END_W, END_H = 620, 360   # the debrief card
 TOWER_LOST_COOLDOWN = 4.0   # seconds between "position overrun" lines
+
+
+_PAPER = {}
+
+
+def paper(w, h, seed=1, tone="paper"):
+    """Weathered paper: grain, fibres, stains, worn edges and a crease. Cached per size."""
+    key = (w, h, seed, tone)
+    if key in _PAPER:
+        return _PAPER[key]
+    rng = random.Random(seed)
+    s = pygame.Surface((w, h))
+    s.fill(P.color(tone))
+    for _ in range(w * h // 28):
+        s.fill(P.mix(tone, rng.choice(("paper_shadow", "khaki", "ink", "paper")), rng.uniform(0.04, 0.26)),
+               (rng.randrange(w), rng.randrange(h), rng.choice([1, 1, 2]), 1))
+    for _ in range(max(6, w * h // 1400)):                              # fibres
+        x, y = rng.randrange(w), rng.randrange(h)
+        pygame.draw.line(s, P.mix(tone, "paper_shadow", 0.35), (x, y), (x + rng.randint(-7, 7), y + rng.randint(-3, 3)))
+    for _ in range(rng.randint(2, 4)):                                  # coffee and mud stains
+        r = rng.randint(max(6, min(w, h) // 5), max(8, min(w, h) // 2))
+        stain = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+        for i in range(r, 0, -2):
+            pygame.draw.circle(stain, (*P.mix("mud", "khaki", 0.4), int(46 * (1 - i / r) ** 0.6 + 3)), (r, r), i)
+        pygame.draw.circle(stain, (*P.mix("mud", "ink", 0.2), 38), (r, r), r, 1)   # the dried tide-mark
+        s.blit(stain, (rng.randint(-r // 2, w - r), rng.randint(-r // 2, h - r)))
+    if w > 40 and h > 40:                                               # one fold line, shadow beside highlight
+        if rng.random() < 0.5:
+            x = rng.randint(w // 4, 3 * w // 4)
+            pygame.draw.line(s, P.mix(tone, "paper_shadow", 0.55), (x, 0), (x, h))
+            pygame.draw.line(s, P.mix(tone, "paper", 0.7), (x + 1, 0), (x + 1, h))
+        else:
+            y = rng.randint(h // 4, 3 * h // 4)
+            pygame.draw.line(s, P.mix(tone, "paper_shadow", 0.55), (0, y), (w, y))
+            pygame.draw.line(s, P.mix(tone, "paper", 0.7), (0, y + 1), (w, y + 1))
+    edge = pygame.Surface((w, h), pygame.SRCALPHA)                      # worn, darker edges
+    for i in range(7):
+        a = int(70 * (1 - i / 7) ** 2)
+        pygame.draw.rect(edge, (*P.color("mud_dark"), a), (i, i, w - 2 * i, h - 2 * i), 1)
+    s.blit(edge, (0, 0))
+    _PAPER[key] = s
+    return s
 
 
 def ease_out(t):
@@ -158,6 +202,11 @@ class Hud:
         self.mouse = (-1, -1)
         self.clock = -1.0
         self._tape = self._make_tape()
+        for i in range(len(game.map.towers)):      # build the paper textures now, not on first use
+            paper(CARD_W, CARD_H, 40 + i)
+        r = self.log_rect
+        paper(r.w, r.h, r.w * 7 + r.h)
+        paper(END_W, END_H, END_W * 7 + END_H)
         self._reset(game)
 
     def _reset(self, game):
@@ -256,7 +305,7 @@ class Hud:
 
     def panel(self, screen, rect, tape=True, fill="paper"):
         pygame.draw.rect(screen, P.mix("paper", "ink", 0.55), rect.move(3, 4))
-        pygame.draw.rect(screen, P.color(fill), rect)
+        screen.blit(paper(rect.w, rect.h, rect.w * 7 + rect.h, fill), rect)
         pygame.draw.rect(screen, P.color("ink"), rect, 1)
         if tape:
             for x in (rect.left, rect.right):
@@ -336,7 +385,11 @@ class Hud:
             affordable = game.supply >= tdef.cost
             selected = key == build_key
             pygame.draw.rect(screen, P.mix("paper", "ink", 0.55), rect.move(2, 3))
-            pygame.draw.rect(screen, P.color("paper") if affordable else P.mix("paper", "ink", 0.3), rect)
+            screen.blit(paper(CARD_W, CARD_H, 40 + i), rect)
+            if not affordable:
+                dim = pygame.Surface((CARD_W, CARD_H), pygame.SRCALPHA)
+                dim.fill((*P.color("ink"), 70))
+                screen.blit(dim, rect)
             border = P.color("amber") if selected else (P.color("khaki") if lift > 0.3 else P.color("ink"))
             pygame.draw.rect(screen, border, rect, 3 if selected else 1)
             # key badge
@@ -347,8 +400,8 @@ class Hud:
             name = s.get(f"tower.{key}.name")
             for j, ln in enumerate(wrap(self.f_small, name, CARD_W - 28)[:2]):
                 self._text(screen, self.f_small, ln, P.color("ink"), (rect.left + 22, rect.top + 4 + 12 * j))
-            icon = self.assets.image(f"tower.{key}", 30)
-            screen.blit(icon, icon.get_rect(midleft=(rect.left + 6, rect.bottom - 20)))
+            icon = self.assets.icon(key, 40, 54)
+            screen.blit(icon, icon.get_rect(bottomleft=(rect.left + 6, rect.bottom - 3)))
             cost_color = P.color("ink") if affordable else P.color("clay")
             self._text(screen, self.f_num, s.get("tray.cost", cost=tdef.cost), cost_color,
                        (rect.right - 8, rect.bottom - 6), "bottomright")
@@ -403,7 +456,7 @@ class Hud:
         s = self.s
         won = game.state == "won"
         outcome = "won" if won else "lost"
-        card = pygame.Rect(0, 0, 620, 360)
+        card = pygame.Rect(0, 0, END_W, END_H)
         card.center = (self.width / 2, HUD_H + self.map_h / 2)
         self.panel(screen, card)
         title = s.get(f"end.{outcome}.title").upper()

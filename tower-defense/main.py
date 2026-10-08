@@ -13,8 +13,10 @@ Layout:
     strings.json every player-facing line, edited without touching code
     sim.py       simulation, no pygame
     palette.py   every colour token
-    assets.py    sprites and fonts by key, with drawn fallbacks
-    mapart.py    bakes the static field-map background
+    art.py       paints every sprite, foliage and firebase piece from code
+    assets.py    sprites and fonts by key; files override the painting
+    mapart.py    bakes the static jungle, roads and firebase once at load
+    fx.py        rain, smoke, sparks, muzzle flashes, fading casualties
     lighting.py  darkness overlay and light glows
     ui.py        counters, radio log, build tray, banner, debrief card
     layout.py    screen layout constants
@@ -42,7 +44,7 @@ def main():
     screen = pygame.display.set_mode(screen_size(game.map))
     pygame.display.set_caption("Tower Defense")
     clock = pygame.time.Clock()
-    renderer = Renderer(Strings.load(), Assets(), game.map)
+    renderer = Renderer(Strings.load(), Assets(), game.map, game)
     build_key = game.map.towers[0]
 
     while True:

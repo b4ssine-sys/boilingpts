@@ -1,30 +1,18 @@
-"""Bakes the static field-map background once at load.
+"""Bakes the static painted map once at load: ground, jungle, mud roads, firebase.
 
 Everything here is drawn a single time into one surface; per-frame code just
 blits it. Output is deterministic for a given map, so screenshots and tests
-are repeatable.
+are repeatable. Sprites come from art.py, and every colour from palette.py.
 """
 import math
 import random
 
 import pygame
 
+import art
 import palette as P
 
-
-def _lerp_color(a, b, t):
-    return P.mix(a, b, t)
-
-
-def _paper(size, rng):
-    w, h = size
-    surf = pygame.Surface(size)
-    surf.fill(P.color("paper"))
-    for _ in range(w * h // 90):  # grain
-        x, y = rng.randrange(w), rng.randrange(h)
-        surf.fill(_lerp_color("paper", rng.choice(("paper_shadow", "khaki")), rng.uniform(0.1, 0.45)),
-                  (x, y, rng.choice([1, 1, 2]), 1))
-    return surf
+TRAIL_W = 34          # drawn width of the mud road; the tile grid stays the rule
 
 
 def _dist_to_segment(p, a, b):
@@ -36,106 +24,192 @@ def _dist_to_segment(p, a, b):
     return math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy))
 
 
-def _jungle(surf, game_map, centers, rng):
-    ts = game_map.tile_size
-    base = (game_map.base[0] * ts + ts / 2, game_map.base[1] * ts + ts / 2)
-    for r in range(game_map.rows):
-        for c in range(game_map.cols):
-            mid = (c * ts + ts / 2, r * ts + ts / 2)
-            near_trail = min(_dist_to_segment(mid, a, b)
-                             for path in centers for a, b in zip(path, path[1:]))
-            if near_trail < ts * 1.1 or math.dist(mid, base) < ts * 3.2:
-                continue
-            for _ in range(rng.choice((2, 3, 3, 4))):  # short hatch strokes
-                x = c * ts + rng.uniform(4, ts - 4)
-                y = r * ts + rng.uniform(4, ts - 4)
-                L = rng.uniform(6, 11)
-                col = P.color(rng.choice(("jungle_mid", "jungle_mid", "jungle_light", "jungle_dark")))
-                pygame.draw.line(surf, col, (x, y), (x + L * 0.6, y - L), 1)
+def _trail_distance(p, centers):
+    return min(_dist_to_segment(p, a, b) for path in centers for a, b in zip(path, path[1:]))
 
 
-def _contours(surf, game_map, rng):
+def _soft_noise(size, cell, tones, rng):
+    """Low-resolution random colours scaled up smoothly: cheap soft mottling."""
+    w, h = size
+    small = pygame.Surface((w // cell + 2, h // cell + 2))
+    for y in range(small.get_height()):
+        for x in range(small.get_width()):
+            small.set_at((x, y), rng.choice(tones))
+    return pygame.transform.smoothscale(small, (w + cell * 2, h + cell * 2))
+
+
+def _ground(size, rng):
+    greens = [P.shade("jungle_mid", f) for f in (0.7, 0.85, 1.0, 1.1)] + [P.color("jungle_light")]
+    surf = _soft_noise(size, 64, greens, rng).subsurface((0, 0, *size)).copy()
+    fine = _soft_noise(size, 14, greens + [P.shade("leaf_deep", 1.2)], rng).subsurface((0, 0, *size)).copy()
+    fine.set_alpha(120)
+    surf.blit(fine, (0, 0))
+    w, h = size
+    for _ in range(w * h // 45):                      # grass flecks, light and dark
+        x, y = rng.randrange(w), rng.randrange(h)
+        tone = rng.choice(("leaf_deep", "jungle_dark", "jungle_light", "leaf_bright", "jungle_light"))
+        pygame.draw.line(surf, P.shade(tone, 0.85 + rng.random() * 0.3), (x, y), (x + rng.choice((-1, 0, 1)), y - rng.randint(2, 4)))
+    return surf
+
+
+def _scatter(game_map, centers, rng):
+    """Foliage positions: thick in the deep jungle, none on or beside the trails or in the firebase."""
     ts = game_map.tile_size
-    cx, cy = game_map.base[0] * ts + ts / 2, game_map.base[1] * ts + ts / 2
-    col = P.mix("clay", "paper", 0.45)
-    for radius in (2.3, 3.4, 4.5):
-        pts = []
-        wob = [rng.uniform(-0.18, 0.18) for _ in range(7)]
-        for i in range(64):
-            a = i / 64 * math.tau
-            w = sum(wob[k] * math.sin((k + 1) * a + k) for k in range(7))
-            rr = (radius + w) * ts
-            pts.append((cx + rr * math.cos(a) * 1.15, cy + rr * math.sin(a)))
-        pygame.draw.lines(surf, col, True, pts, 1)
+    w, h = game_map.world_size
+    bx, by = game_map.base[0] * ts + ts / 2, game_map.base[1] * ts + ts / 2
+    items = []
+
+    def ok(x, y, clear):
+        return (_trail_distance((x, y), centers) > clear and math.hypot(x - bx, (y - by) * 0.8) > 118
+                and math.hypot(x - bx, y - by) > 112)
+
+    for _ in range(900):                                           # big canopy trees, well off the trails
+        x, y = rng.uniform(-10, w + 10), rng.uniform(-4, h + 20)
+        if ok(x, y, 62) and all(math.hypot(x - ix, (y - iy)) > 66 for k, ix, iy, _ in items if k == "tree"):
+            items.append(("tree", x, y, rng.randrange(4)))
+    for _ in range(1400):                                          # palms and ferns, closer in
+        x, y = rng.uniform(0, w), rng.uniform(0, h + 10)
+        if ok(x, y, 40) and all(math.hypot(x - ix, y - iy) > 30 for k, ix, iy, _ in items if k in ("palm", "fern")):
+            items.append((rng.choice(("palm", "palm", "fern")), x, y, rng.randrange(4)))
+    for _ in range(500):                                           # bushes and grass everywhere legal
+        x, y = rng.uniform(0, w), rng.uniform(0, h + 6)
+        if ok(x, y, 27):
+            items.append((rng.choice(("bush", "tuft", "tuft", "tuft")), x, y, rng.randrange(3)))
+    items.sort(key=lambda it: it[2])                               # back to front
+    return items
+
+
+def _paste(surf, sprite, x, y, flip=False, scale=1.0, cache=None):
+    """Blit a sprite standing on (x, y). `cache` holds scaled copies for one bake only:
+    keyed by object id, it must never outlive the sprites it describes."""
+    if scale != 1.0:
+        key = (id(sprite), scale)
+        if cache is None or key not in cache:
+            scaled = pygame.transform.smoothscale(
+                sprite, (round(sprite.get_width() * scale), round(sprite.get_height() * scale)))
+            if cache is None:
+                sprite = scaled
+            else:
+                cache[key] = scaled
+        if cache is not None:
+            sprite = cache[key]
+    if flip:
+        sprite = pygame.transform.flip(sprite, True, False)
+    surf.blit(sprite, (x - sprite.get_width() / 2, y - sprite.get_height() * 0.78))
 
 
 def _trails(surf, centers, rng):
-    edge, fill = P.mix("clay", "khaki", 0.35), P.color("khaki")
+    edge, mud = P.shade("mud", 0.78), P.color("mud")
+    rut, hi = P.mix("mud", "mud_dark", 0.55), P.shade("mud", 1.25)
     for path in centers:
-        for width, col in ((36, edge), (28, fill)):
+        for width, col in ((TRAIL_W + 7, edge), (TRAIL_W, mud)):
             pygame.draw.lines(surf, col, False, path, width)
             for p in path:
                 pygame.draw.circle(surf, col, p, width // 2)
-        for a, b in zip(path, path[1:]):  # wear and ruts
-            n = int(math.dist(a, b) / 6)
-            for i in range(n):
-                t = i / max(n, 1)
-                x = a[0] + (b[0] - a[0]) * t + rng.uniform(-11, 11)
-                y = a[1] + (b[1] - a[1]) * t + rng.uniform(-11, 11)
-                pygame.draw.circle(surf, P.mix("khaki", "clay", rng.uniform(0.1, 0.5)), (x, y), rng.choice([1, 1, 2]))
+        for a, b in zip(path, path[1:]):
+            L = math.dist(a, b)
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            nx, ny = -uy, ux
+            for off in (-7.5, 7.5):                                # the two wheel ruts
+                a2 = (a[0] + nx * off, a[1] + ny * off)
+                b2 = (b[0] + nx * off, b[1] + ny * off)
+                pygame.draw.line(surf, rut, a2, b2, 4)
+                pygame.draw.line(surf, hi, (a2[0] + nx * 3.2, a2[1] + ny * 3.2), (b2[0] + nx * 3.2, b2[1] + ny * 3.2), 1)
+                d = 6.0
+                while d < L - 4:                                   # tread marks across the rut
+                    x, y = a2[0] + ux * d, a2[1] + uy * d
+                    pygame.draw.line(surf, P.mix("mud", "mud_dark", 0.8), (x - nx * 2.4 - ux * 1.5, y - ny * 2.6 - uy * 1.5),
+                                     (x + nx * 2.6 + ux * 1.5, y + ny * 2.6 + uy * 1.5), 1)
+                    d += 8.5
+            for _ in range(int(L / 5)):                            # mud speckle, stones
+                t = rng.random()
+                x = a[0] + (b[0] - a[0]) * t + nx * rng.uniform(-15, 15)
+                y = a[1] + (b[1] - a[1]) * t + ny * rng.uniform(-15, 15)
+                pygame.draw.circle(surf, P.mix("mud", rng.choice(("mud_dark", "khaki", "concrete")), rng.uniform(0.15, 0.5)),
+                                   (x, y), rng.choice([1, 1, 2]))
+    for i, path in enumerate(centers):                             # puddles on the long straights
+        for a, b in zip(path, path[1:]):
+            if math.dist(a, b) > 150 and rng.random() < 0.9:
+                t = rng.uniform(0.3, 0.7)
+                x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t + rng.uniform(-6, 6)
+                p = art.mud_puddle(rng.randrange(1000))
+                surf.blit(p, (x - p.get_width() / 2, y - p.get_height() / 2))
 
 
 def _route_marks(surf, centers):
-    """Grease-pencil dashes and direction arrows down each trail."""
-    col = P.mix("clay", "ink", 0.35)
+    """Faint grease-pencil dashes and direction arrows down each trail."""
+    col = (*P.color("ink"), 110)
+    layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
     for path in centers:
-        walked = 0.0
-        next_arrow = 90.0
+        walked, next_arrow = 0.0, 90.0
         for a, b in zip(path, path[1:]):
             L = math.dist(a, b)
             ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
             d = 0.0
             while d < L:
-                s, e = d, min(d + 9, L)
-                pygame.draw.line(surf, col, (a[0] + ux * s, a[1] + uy * s),
-                                 (a[0] + ux * e, a[1] + uy * e), 2)
+                e = min(d + 9, L)
+                pygame.draw.line(layer, col, (a[0] + ux * d, a[1] + uy * d), (a[0] + ux * e, a[1] + uy * e), 2)
                 d += 17
                 if walked + d >= next_arrow and d < L - 14:
                     x, y = a[0] + ux * d, a[1] + uy * d
                     for sgn in (-1, 1):
                         ang = math.atan2(uy, ux) + math.pi + sgn * 0.5
-                        pygame.draw.line(surf, col, (x, y), (x + 9 * math.cos(ang), y + 9 * math.sin(ang)), 2)
+                        pygame.draw.line(layer, col, (x, y), (x + 9 * math.cos(ang), y + 9 * math.sin(ang)), 2)
                     next_arrow += 180
             walked += L
+    surf.blit(layer, (0, 0))
 
 
-def _base_marker(surf, game_map):
+def _firebase(surf, game_map, rng):
+    """Gravel apron, sandbag walls, concrete bunker, crates and razor wire around the base tile."""
     ts = game_map.tile_size
-    cx, cy = game_map.base[0] * ts + ts / 2, game_map.base[1] * ts + ts / 2
-    col = P.color("clay")
-    r = pygame.Rect(0, 0, ts * 1.5, ts * 1.5)
-    r.center = (cx, cy)
-    pygame.draw.rect(surf, P.color("paper"), r)
-    pygame.draw.rect(surf, col, r, 3)
-    pygame.draw.line(surf, col, r.topleft, r.bottomright, 2)
-    pygame.draw.line(surf, col, r.topright, r.bottomleft, 2)
+    bx, by = game_map.base[0] * ts + ts / 2, game_map.base[1] * ts + ts / 2
+    apron = pygame.Surface((260, 230), pygame.SRCALPHA)
+    pygame.draw.ellipse(apron, (*P.mix("concrete", "khaki", 0.35), 235), apron.get_rect().inflate(-6, -6))
+    pygame.draw.ellipse(apron, (*P.mix("concrete", "mud", 0.3), 255), apron.get_rect().inflate(-30, -28))
+    for _ in range(420):
+        x, y = rng.randrange(40, 220), rng.randrange(36, 196)
+        if apron.get_at((x, y)).a > 200:
+            pygame.draw.circle(apron, P.mix("concrete", rng.choice(("khaki", "mud_dark", "paper")), rng.uniform(0.1, 0.5)),
+                               (x, y), rng.choice([1, 1, 2]))
+    surf.blit(apron, (bx - 130 + 14, by - 115))
+    top, bottom, left = by - 70, by + 74, bx - 52
+    parts = []
+    parts.append((top, art.sandbag_wall(120), bx - 4, top))                       # back wall
+    parts.append((bottom, art.sandbag_wall(120), bx - 4, bottom))                 # front wall
+    parts.append((top + 40, art.sandbag_wall(48, True), left, top + 44))          # left wall, gap for the road
+    parts.append((bottom - 20, art.sandbag_wall(48, True), left, bottom - 6))
+    parts.append((by - 4, art.bunker(), bx + 22, by + 26))                         # command bunker
+    parts.append((by + 40, art.barrel(), bx - 30, by + 44))
+    parts.append((by - 36, art.barrel(), bx - 22, by - 36))
+    for _, spr, x, y in sorted(parts, key=lambda p: p[3]):
+        _paste(surf, spr, x, y)
+    # razor wire across the approaches, a gap left where each trail comes in
+    wx = left - 36
+    for y0, y1 in ((top - 14, by - 34), (by + 34, bottom + 14)):
+        n = max(1, int((y1 - y0) / 40))
+        for i in range(n + 1):
+            y = y0 + (y1 - y0) * i / n
+            _paste(surf, art.wire_stake(), wx, y + 10)
+        for i in range(n):
+            y = y0 + (y1 - y0) * (i + 0.5) / n
+            coil = pygame.transform.rotate(art.wire_coil(40), 90)
+            surf.blit(coil, (wx - coil.get_width() / 2 + 2, y - coil.get_height() / 2))
+    for x0 in range(int(left - 36), int(bx + 60), 52):                             # front line of wire
+        _paste(surf, art.wire_coil(46), x0 + 24, bottom + 36)
+        _paste(surf, art.wire_stake(), x0 + 1, bottom + 38)
 
 
 def _stamp(surf, text, font, center, degrees):
-    label = font.render(text, True, P.color("clay"))
-    label.set_alpha(215)
-    label = pygame.transform.rotate(label, degrees)
-    surf.blit(label, label.get_rect(center=center))
-
-
-def _folds(surf):
-    w, h = surf.get_size()
-    for x in (w // 2,):
-        pygame.draw.line(surf, P.color("paper_shadow"), (x, 0), (x, h), 2)
-        pygame.draw.line(surf, P.mix("paper", "amber_hot", 0.4), (x + 2, 0), (x + 2, h), 1)
-    for y in (h // 2,):
-        pygame.draw.line(surf, P.color("paper_shadow"), (0, y), (w, y), 2)
-        pygame.draw.line(surf, P.mix("paper", "amber_hot", 0.4), (0, y + 2), (w, y + 2), 1)
+    ink = font.render(text, True, P.color("ink"))
+    face = font.render(text, True, P.shade("paper", 0.92))
+    box = pygame.Surface((face.get_width() + 4, face.get_height() + 4), pygame.SRCALPHA)
+    for dx, dy in ((0, 0), (4, 0), (0, 4), (4, 4), (2, 0), (0, 2), (4, 2), (2, 4)):
+        box.blit(ink, (dx, dy))
+    box.blit(face, (2, 2))
+    box.set_alpha(225)
+    box = pygame.transform.rotate(box, degrees)
+    surf.blit(box, box.get_rect(center=center))
 
 
 def _vignette(surf):
@@ -144,7 +218,7 @@ def _vignette(surf):
     for y in range(12):
         for x in range(16):
             d = max(abs(x - 7.5) / 8, abs(y - 5.5) / 6)
-            v = int(255 - 70 * max(0.0, d - 0.55) / 0.45)
+            v = int(255 - 95 * max(0.0, d - 0.5) / 0.5)
             small.set_at((x, y), (v, v, v))
     surf.blit(pygame.transform.smoothscale(small, (w, h)), (0, 0), special_flags=pygame.BLEND_MULT)
 
@@ -153,16 +227,30 @@ def bake_map(game_map, strings, assets):
     ts = game_map.tile_size
     size = game_map.world_size
     rng = random.Random(game_map.key)
-    surf = _paper(size, rng)
+    surf = _ground(size, rng)
     centers = [[(c * ts + ts / 2, r * ts + ts / 2) for c, r in path] for path in game_map.paths]
-    _jungle(surf, game_map, centers, rng)
-    _contours(surf, game_map, rng)
+    variants = {k: [fn(i * 17 + 3) for i in range(4 if k in ("tree", "palm") else 3)] for k, fn in art.FOLIAGE.items()}
+    items = _scatter(game_map, centers, rng)
+    scaled_cache = {}
+    for kind, x, y, v in items:                                    # jungle behind the roads
+        scale = rng.choice((0.75, 0.9, 1.0, 1.15)) if kind in ("tree", "palm") else rng.choice((0.9, 1.0, 1.15))
+        _paste(surf, variants[kind][v % len(variants[kind])], x, y, rng.random() < 0.5, scale, scaled_cache)
     _trails(surf, centers, rng)
     _route_marks(surf, centers)
-    _base_marker(surf, game_map)
-    font = assets.font("label", 17)
+    for _ in range(int(sum(len(p) for p in centers) * 5)):         # ferns and grass fringing the road edges
+        a, b = rng.choice([(p[i], p[i + 1]) for p in centers for i in range(len(p) - 1)])
+        t = rng.random()
+        L = math.dist(a, b)
+        nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
+        side = rng.choice((-1, 1))
+        x = a[0] + (b[0] - a[0]) * t + nx * side * (TRAIL_W / 2 + rng.uniform(4, 12))
+        y = a[1] + (b[1] - a[1]) * t + ny * side * (TRAIL_W / 2 + rng.uniform(4, 12))
+        if _trail_distance((x, y), centers) > TRAIL_W / 2 + 2:
+            kind = rng.choice(("tuft", "tuft", "fern", "bush"))
+            _paste(surf, variants[kind][rng.randrange(3)], x, y + 6, rng.random() < 0.5)
+    _firebase(surf, game_map, rng)
+    font = assets.font("label", 18)
     for key, col, row, degrees in game_map.labels:
         _stamp(surf, strings.get(key), font, (col * ts, row * ts), degrees)
-    _folds(surf)
     _vignette(surf)
     return surf

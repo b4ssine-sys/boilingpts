@@ -267,7 +267,7 @@ class BlindFireTests(unittest.TestCase):
         self.assertEqual(len(self.g.shells), 1)
         s = self.g.shells[0]
         self.assertEqual((s.tx, s.ty), (220, 100))          # the stale position, not the live one
-        self.assertIn("muzzle", [ev[0] for ev in self.g.events])
+        self.assertIn("mortar_fire", [ev[0] for ev in self.g.events])
 
     def test_contacts_outside_min_or_max_range_are_ignored(self):
         self.hidden_contact(220, 240)                       # 20 away: inside the blind zone

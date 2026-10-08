@@ -1,20 +1,31 @@
-"""Presentation. Reads simulation state, draws it, never mutates it."""
+"""Presentation. Reads simulation state, draws it, never mutates it.
+
+Draw order, back to front: baked map, ground decals, towers and enemies sorted
+by depth, smoke and fallen units, rain, the darkness overlay, then everything
+that glows (light shafts, sparkles, muzzle flashes, tracers, sparks), then
+contacts, the placement hover and the interface.
+"""
 import math
+import random
 
 import pygame
 
+import art
 import palette as P
-from lighting import SIGHT_STRENGTH, Light, Lighting
+from fx import Fx, Rain
 from layout import HUD_H, TRAY_H, screen_size
+from lighting import SIGHT_STRENGTH, Light, Lighting
 from mapart import bake_map
 from ui import Hud
+from ui import wrap  # noqa: F401  (re-exported)
 
 FPS = 60
-TOWER_PX = 34
-ENEMY_PX = 28
-EFFECT_TTL = 0.45
-# Short-lived lights: kind -> (radius, seconds). Muzzle flashes and claymore bursts.
-FLASHES = {"muzzle": (46, 0.12), "claymore": (120, 0.35)}
+ENEMY_SCALE = 1.3
+TOWER_SCALE = 1.25
+LAMP_LIFT = 41          # how far above a flare tower's base its lamp sits
+RECOIL_PX, RECOIL_TIME = 2.6, 0.09
+# Short-lived lights: event kind -> (radius, seconds).
+FLASH_LIGHTS = {"muzzle": (46, 0.12), "mortar_fire": (84, 0.2), "claymore": (120, 0.35), "splash": (66, 0.18)}
 
 
 def world_to_screen(x, y):
@@ -26,23 +37,28 @@ def screen_to_tile(pos, tile_size):
     return int(x // tile_size), int((y - HUD_H) // tile_size)
 
 
-from ui import wrap  # noqa: E402,F401  (re-exported)
-
-
 class Renderer:
-    def __init__(self, strings, assets, game_map):
+    def __init__(self, strings, assets, game_map, game=None):
         self.strings = strings
         self.assets = assets
         self.map = game_map
         self.background = bake_map(game_map, strings, assets)  # static, drawn once
         self.hud = None       # built on first use, once there is a game to read
-        self.effects = []     # [kind, x, y, radius, age]
-        self.flashes = []     # [x, y, radius, ttl, age]
+        self.flashes = []     # [x, y, radius, ttl, age]: short-lived lights
         self._heading = {}    # id(enemy) -> last angle
         w, h = game_map.world_size
         self.lighting = Lighting((w, h))
         self.lighting.prewarm()
-        self.time = 0.0       # drives flare flicker; presentation only
+        assets.prewarm(TOWER_SCALE, ENEMY_SCALE)
+        self.fx = Fx()
+        self.rain = Rain((w, h))
+        self.time = 0.0       # drives animation and flicker; presentation only
+        self._recoil = {}     # (x, y) of a gun -> seconds of kick left
+        self._last_enemies = {}   # id -> (image, x, y) for fading out the fallen
+        self._last_towers = {}    # (x, y) -> (tower key, aim) for fading out lost positions
+        self._sparkle_rng = random.Random(9)
+        if game is not None:
+            self._ensure_hud(game)   # build the interface textures now, not on the first frame
 
     # ---- per-frame bookkeeping ----
     def _ensure_hud(self, game):
@@ -55,18 +71,61 @@ class Renderer:
         self.time += dt
         self.lighting.set_time_of_day(game.time_of_day, game.time_rule.sight_scale)
         self.lighting.update(dt)
-        for kind, x, y, radius in game.events:
-            if kind in FLASHES:
-                r, ttl = FLASHES[kind]
-                self.flashes.append([x, y, r, ttl, 0.0])
-            if kind != "muzzle":
-                self.effects.append([kind, x, y, radius, 0.0])
-        for fx in self.effects:
-            fx[4] += dt
-        self.effects = [fx for fx in self.effects if fx[4] < EFFECT_TTL]
+        self.rain.update(dt, min(1.0, self.lighting.alpha / 150))
+        self._enemy_ghosts(game)
+        for kind, x, y, extra in game.events:
+            self._on_event(game, kind, x, y, extra)
+        for sh in game.shells:                                    # a thin smoke trail behind each shell
+            if self.fx.rng.random() < 0.5:
+                self.fx.puff(sh.x, sh.y - self._arc(sh), 1, 2.2, rise=4, spread=1)
+        self.fx.update(dt)
         for fl in self.flashes:
             fl[4] += dt
         self.flashes = [fl for fl in self.flashes if fl[4] < fl[3]]
+        self._recoil = {k: v - dt for k, v in self._recoil.items() if v > dt}
+
+    def _on_event(self, game, kind, x, y, extra):
+        if kind in FLASH_LIGHTS:
+            r, ttl = FLASH_LIGHTS[kind]
+            self.flashes.append([x, y, r, ttl, 0.0])
+        if kind == "muzzle":
+            self.fx.muzzle(x, y, extra, art.GUN_TIP["mg_nest"] * TOWER_SCALE)
+            self._recoil[(x, y)] = RECOIL_TIME
+        elif kind == "mortar_fire":
+            self.fx.mortar_fire(x, y, extra, art.GUN_TIP["mortar"] * TOWER_SCALE)
+            self._recoil[(x, y)] = RECOIL_TIME * 1.6
+        elif kind == "hit":
+            self.fx.hit(x, y, extra)
+        elif kind == "splash":
+            self.fx.impact(x, y, extra)
+        elif kind == "claymore":
+            self.fx.claymore(x, y, extra)
+        elif kind == "tower_lost":
+            self.fx.tower_lost(x, y)
+            old = self._last_towers.get((x, y))
+            if old:
+                self.fx.ghost(self.assets.scaled(f"tower.{old[0]}.base", TOWER_SCALE), x, y + 24)
+
+    def _enemy_image(self, e):
+        """(sprite, heading) for an enemy right now: walk frame, mirrored when heading west."""
+        tgt = e.tower_target
+        ang = math.atan2(tgt.y - e.y, tgt.x - e.x) if tgt is not None else self._path_heading(e)
+        self._heading[id(e)] = ang
+        frame = int(self.time * (e.speed / 9.0) + (id(e) % 7)) % 2
+        img = self.assets.flipped(f"enemy.{e.defn.key}.{frame}", ENEMY_SCALE, math.cos(ang) < 0)
+        return img, ang
+
+    def _enemy_ghosts(self, game):
+        """Anyone who vanished since last update, seen or not, fades out as a grey shape."""
+        now = {}
+        for e in game.enemies:
+            if e.visible:
+                img, _ = self._enemy_image(e)
+                now[id(e)] = (img, e.x, e.y)
+        for k, (img, x, y) in self._last_enemies.items():
+            if k not in now and not any(id(e) == k for e in game.enemies):
+                self.fx.ghost(img, x, y + 6)
+        self._last_enemies = now
 
     def _lights(self, game):
         """The same circles the simulation sees by, plus short-lived flashes."""
@@ -87,23 +146,17 @@ class Renderer:
         return self._ensure_hud(game).hit_test(pos, game)
 
     def draw(self, screen, game, build_key, mouse_pos):
-        m = game.map
-        ts = m.tile_size
-        width, height = screen_size(m)
         tdef = game.content.towers[build_key]
-
         screen.fill(P.color("ink"))
         screen.blit(self.background, (0, HUD_H))
-        self._draw_towers(screen, game)
-        self._draw_enemies(screen, game)
-        for b in game.bullets:
-            pygame.draw.circle(screen, P.color("amber_hot"), world_to_screen(b.x, b.y), 3)
-        for sh in game.shells:
-            x, y = world_to_screen(sh.x, sh.y)
-            pygame.draw.circle(screen, P.color("ink"), (x, y), 4)
-            pygame.draw.circle(screen, P.color("amber"), (x, y), 4, 1)
-        self._draw_effects(screen)
+        self._draw_units(screen, game)
+        self._draw_shells(screen, game)
+        self.fx.draw_world(screen, HUD_H)
+        self.rain.draw(screen, HUD_H)
         self.lighting.render(screen, self._lights(game), HUD_H)
+        self._draw_shafts(screen, game)
+        self._draw_tracers(screen, game)
+        self.fx.draw_lit(screen, HUD_H)
         self._draw_contacts(screen, game)
         self._draw_hover(screen, game, tdef, mouse_pos)
         hud = self._ensure_hud(game)
@@ -127,6 +180,7 @@ class Renderer:
             return
         ok = game.supply >= tdef.cost
         col = P.color("amber") if ok else P.color("clay")
+        self._draw_preview(screen, tdef, cx, cy, ok)
         pygame.draw.rect(screen, col, rect, 2)
         if tdef.range:
             pygame.draw.circle(screen, col, (cx, cy), tdef.range, 1)
@@ -136,40 +190,60 @@ class Renderer:
             pygame.draw.circle(screen, P.color("amber_hot"), (cx, cy),
                                tdef.light_radius * self.lighting.sight_scale, 1)
 
-    def _draw_towers(self, screen, game):
-        for t in game.towers.values():
-            x, y = world_to_screen(t.x, t.y)
-            key = f"tower.{t.defn.key}"
-            if t.defn.kind == "turret":
-                img = self.assets.rotated(key, TOWER_PX, t.aim)
-            else:
-                img = self.assets.image(key, TOWER_PX)
-            screen.blit(img, img.get_rect(center=(x, y)))
-            if t.hp < t.max_hp:
-                self._bar(screen, x, y - 24, 26, t.hp / t.max_hp)
+    def _draw_preview(self, screen, tdef, cx, cy, ok):
+        """The position about to be built, drawn translucent where it would stand."""
+        ax, ay = art.ANCHOR["tower"]
+        base = self.assets.composed(tdef.key, TOWER_SCALE)
+        base.set_alpha(150 if ok else 80)
+        screen.blit(base, (cx - base.get_width() * ax, cy - base.get_height() * ay))
 
-    def _draw_enemies(self, screen, game):
-        seen = set()
+    def _draw_units(self, screen, game):
+        """Towers and enemies together, sorted by how far down the map they stand."""
+        ax, ay = art.ANCHOR["tower"]
+        drawables = []
+        for t in game.towers.values():
+            self._last_towers[(t.x, t.y)] = (t.defn.key, t.aim)
+            drawables.append((t.y - (100 if t.defn.kind == "mine" else 0), 0, t))
         for e in game.enemies:
-            seen.add(id(e))
-            if not e.visible:
-                continue  # in the dark; only a contact mark may show where it was
-            x, y = world_to_screen(e.x, e.y)
-            tgt = e.tower_target or None
-            if tgt is not None:
-                ang = math.atan2(tgt.y - e.y, tgt.x - e.x)
-            else:
-                ang = self._path_heading(e)
-            self._heading[id(e)] = ang
-            shadow = pygame.Rect(0, 0, 20, 10)
-            shadow.center = (x + 2, y + 6)
-            pygame.draw.ellipse(screen, P.mix("paper", "ink", 0.35), shadow)
-            img = self.assets.rotated(f"enemy.{e.defn.key}", ENEMY_PX, ang)
-            screen.blit(img, img.get_rect(center=(x, y)))
-            if e.hp < e.max_hp:
-                self._bar(screen, x, y - 20, 24, max(e.hp, 0) / e.max_hp)
-        for k in [k for k in self._heading if k not in seen]:
+            if e.visible:
+                drawables.append((e.y, 1, e))
+        for _, kind, obj in sorted(drawables, key=lambda d: d[0]):
+            (self._draw_tower if kind == 0 else self._draw_enemy)(screen, obj)
+        for _, kind, obj in drawables:                                 # health bars sit on top of everything
+            if kind == 0 and obj.hp < obj.max_hp and obj.defn.kind != "mine":
+                x, y = world_to_screen(obj.x, obj.y)
+                self._bar(screen, x, y - 44, 30, obj.hp / obj.max_hp)
+            elif kind == 1 and obj.hp < obj.max_hp:
+                x, y = world_to_screen(obj.x, obj.y)
+                self._bar(screen, x, y - 55, 28, max(obj.hp, 0) / obj.max_hp)
+        live = {id(e) for e in game.enemies}
+        for k in [k for k in self._heading if k not in live]:
             del self._heading[k]
+
+    def _draw_tower(self, screen, t):
+        ax, ay = art.ANCHOR["tower"]
+        x, y = world_to_screen(t.x, t.y)
+        base = self.assets.scaled(f"tower.{t.defn.key}.base", TOWER_SCALE)
+        screen.blit(base, (x - base.get_width() * ax, y - base.get_height() * ay))
+        gun_key = f"tower.{t.defn.key}.gun"
+        if t.defn.kind == "turret" and self.assets.has(gun_key):
+            mx, my = art.MOUNT[t.defn.key]
+            kick = max(0.0, self._recoil.get((t.x, t.y), 0.0)) / RECOIL_TIME
+            gun = self.assets.rotated(gun_key, t.aim, TOWER_SCALE)
+            px = x + mx * TOWER_SCALE - math.cos(t.aim) * RECOIL_PX * kick
+            py = y + my * TOWER_SCALE - math.sin(t.aim) * RECOIL_PX * kick
+            screen.blit(gun, gun.get_rect(center=(px, py)))
+        front_key = f"tower.{t.defn.key}.front"
+        if self.assets.has(front_key):                                 # the near wall overlaps the gun
+            front = self.assets.scaled(front_key, TOWER_SCALE)
+            screen.blit(front, (x - front.get_width() * ax, y - front.get_height() * ay))
+
+    def _draw_enemy(self, screen, e):
+        img, ang = self._enemy_image(e)
+        ax, ay = art.ANCHOR["enemy"]
+        x, y = world_to_screen(e.x, e.y)
+        bob = abs(math.sin(self.time * e.speed / 9.0 * math.pi + id(e) % 7)) * 1.6
+        screen.blit(img, (x - img.get_width() * ax, y - img.get_height() * ay - bob))
 
     def _path_heading(self, e):
         if e.target < len(e.waypoints):
@@ -178,22 +252,56 @@ class Renderer:
         return self._heading.get(id(e), 0.0)
 
     def _bar(self, screen, x, y, w, frac):
-        pygame.draw.rect(screen, P.color("ink"), (x - w / 2 - 1, y - 1, w + 2, 5))
-        pygame.draw.rect(screen, P.color("jungle_light"), (x - w / 2, y, w * frac, 3))
+        tone = "jungle_light" if frac > 0.5 else "amber" if frac > 0.25 else "clay"
+        pygame.draw.rect(screen, P.color("ink"), (x - w / 2 - 1.5, y - 1.5, w + 3, 6), border_radius=2)
+        pygame.draw.rect(screen, P.shade(tone, 0.55), (x - w / 2, y, w, 3))
+        pygame.draw.rect(screen, P.color(tone), (x - w / 2, y, max(1, w * frac), 3))
 
-    def _draw_effects(self, screen):
-        for kind, x, y, radius, age in self.effects:
-            t = age / EFFECT_TTL
-            r = max(2, int(radius * (0.35 + 0.65 * t)))
-            alpha = int(200 * (1 - t))
-            surf = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
-            tone = {"splash": "khaki", "claymore": "amber", "tower_lost": "clay"}.get(kind, "khaki")
-            if kind != "tower_lost":
-                pygame.draw.circle(surf, (*P.color(tone), alpha // 3), (r + 2, r + 2), r)
-            pygame.draw.circle(surf, (*P.color("amber_hot" if kind == "claymore" else tone), alpha),
-                               (r + 2, r + 2), r, 3)
-            sx, sy = world_to_screen(x, y)
-            screen.blit(surf, (sx - r - 2, sy - r - 2))
+    @staticmethod
+    def _arc(shell):
+        """Height of a mortar round above the ground: a parabola over its flight."""
+        total = math.hypot(shell.tx - shell.sx, shell.ty - shell.sy)
+        if total < 1:
+            return 0.0
+        p = 1 - math.hypot(shell.tx - shell.x, shell.ty - shell.y) / total
+        return 4 * min(70.0, total * 0.45) * p * (1 - p)
+
+    def _draw_shells(self, screen, game):
+        for sh in game.shells:
+            gx, gy = world_to_screen(sh.x, sh.y)
+            lift = self._arc(sh)
+            shadow = pygame.Rect(0, 0, 9 - min(4, lift / 14), 4)
+            shadow.center = (gx, gy)
+            pygame.draw.ellipse(screen, P.mix("jungle_dark", "ink", 0.7), shadow)
+            pygame.draw.circle(screen, P.color("steel"), (gx, gy - lift), 3.4)
+            pygame.draw.circle(screen, P.color("khaki"), (gx, gy - lift - 1), 1.6)
+
+    def _draw_tracers(self, screen, game):
+        for b in game.bullets:
+            x, y = world_to_screen(b.x, b.y - 8)
+            dx, dy = math.cos(b.heading), math.sin(b.heading)
+            pygame.draw.line(screen, P.color("amber"), (x - dx * 12, y - dy * 12), (x, y), 2)
+            pygame.draw.line(screen, P.color("amber_hot"), (x - dx * 5, y - dy * 5), (x, y), 2)
+
+    def _draw_shafts(self, screen, game):
+        """Gold light shafts around each lit flare lamp, and glints on the wet ground."""
+        k = self.lighting.sight_scale
+        shafts, lamps = [], []
+        for x, y, r, kind in game.light_sources():
+            if kind == "light":
+                sx, sy = world_to_screen(x, y - LAMP_LIFT)
+                shafts.append((sx, sy, r * k * 0.95))
+                lamps.append((x, y, r * k))
+        self.lighting.render_shafts(screen, shafts, self.time)
+        if self.lighting.alpha < 40:
+            return
+        rng = random.Random(int(self.time / 0.14) * 31 + 7)          # glints re-roll a few times a second
+        for x, y, r in lamps:
+            for _ in range(11):
+                a, d = rng.uniform(0, math.tau), r * math.sqrt(rng.random()) * 0.85
+                px, py = world_to_screen(x + math.cos(a) * d, y + math.sin(a) * d * 0.8)
+                if rng.random() < 0.6:
+                    pygame.draw.circle(screen, P.mix("amber_hot", "amber", rng.random()), (px, py), 1)
 
     def _draw_contacts(self, screen, game):
         """Faint rings where a hidden enemy was last seen. They fade as the contact goes stale."""

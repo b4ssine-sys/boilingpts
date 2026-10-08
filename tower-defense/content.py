@@ -87,8 +87,8 @@ FIREBASE = MapDef(
     labels=(
         ("map.firebase.label.north_treeline", 3.0, 1.0, -4),
         ("map.firebase.label.south_approach", 3.0, 13.2, 3),
-        ("map.firebase.label.wire", 16.5, 8.4, 0),
-        ("map.firebase.label.base", 18.0, 5.6, 0),
+        ("map.firebase.label.wire", 15.6, 9.9, 0),
+        ("map.firebase.label.base", 18.4, 4.9, 0),
     ),
 )
 

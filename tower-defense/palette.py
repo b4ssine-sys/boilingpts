@@ -13,6 +13,22 @@ _HEX = {
     "amber": "#F2B14A",
     "amber_hot": "#FFE2A0",
     "night_tint": "#10162A",
+    # Painted-world additions. Same muted family as the tokens above; used by
+    # art.py and mapart.py so no colour literal lives outside this file.
+    "mud": "#6B5640",
+    "mud_dark": "#46382A",
+    "concrete": "#8F9189",
+    "concrete_dark": "#5E625C",
+    "sandbag": "#B09A6A",
+    "steel": "#4B4F4E",
+    "wood": "#7A5C3A",
+    "wood_dark": "#4A3722",
+    "leaf_deep": "#1F3320",
+    "leaf_bright": "#7FA14F",
+    "rain": "#B8C6D0",
+    "cloth_brown": "#6E5A3C",
+    "cloth_green": "#4E5A3A",
+    "skin": "#A88660",
 }
 
 
@@ -33,6 +49,12 @@ TINTS = {
 
 def color(token):
     return COLORS[token]
+
+
+def shade(c, f):
+    """Scale a token or RGB tuple's brightness. f < 1 darkens, f > 1 lightens (clamped)."""
+    rgb = COLORS[c] if isinstance(c, str) else c
+    return tuple(max(0, min(255, round(v * f))) for v in rgb)
 
 
 def mix(a, b, t):

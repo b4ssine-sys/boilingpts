@@ -26,12 +26,19 @@ GLOW_LEVELS = (0.25, 0.5, 1.0)  # faint at dusk and dawn, full at night
 Light = namedtuple("Light", "x y radius strength glow steady")
 
 
+RAY_BUCKET = 24       # shaft sprites are costly to build, so their radii step in coarser buckets
+RAY_LEVELS = (0.45, 0.75, 1.0)
+RAY_COUNT = 6
+
+
 class GradientCache:
     """Radial falloff sprites, built once per bucket and never per frame."""
 
     def __init__(self):
         self._punch = {}
         self._glow = {}
+        self._rays = {}
+        self._fall = {}
 
     @staticmethod
     def _falloff(d):
@@ -76,6 +83,39 @@ class GradientCache:
         return self._glow[key]
 
 
+    def rays(self, radius, phase, level):
+        """Additive light shafts fanning out from a lamp, faded toward their tips.
+        Two phases are offset by half a ray so alternating them makes the beams shimmer.
+        Dimmer levels are the brightest one scaled down, which is far cheaper to build."""
+        r = max(RAY_BUCKET, round(radius / RAY_BUCKET) * RAY_BUCKET)
+        key = (r, phase, level)
+        if key not in self._rays:
+            if level == len(RAY_LEVELS) - 1:
+                if r not in self._fall:
+                    fall = self._small(lambda f: (int(255 * f),) * 3 + (255,))
+                    self._fall[r] = pygame.transform.smoothscale(fall, (r * 2, r * 2)).convert()
+                # Drawn at half size and scaled up: the blur turns hard-edged wedges into soft beams.
+                half_r = r // 2
+                small = pygame.Surface((half_r * 2, half_r * 2))
+                dim = P.shade("amber", 0.24)
+                for i in range(RAY_COUNT):
+                    a = math.tau * (i + 0.5 * phase) / RAY_COUNT + 0.3
+                    half = 0.11 + 0.035 * ((i * 5) % 3)
+                    pts = [(half_r, half_r), (half_r + math.cos(a - half) * half_r, half_r + math.sin(a - half) * half_r),
+                           (half_r + math.cos(a + half) * half_r, half_r + math.sin(a + half) * half_r)]
+                    pygame.draw.polygon(small, dim, pts)
+                surf = pygame.transform.smoothscale(small, (r * 2, r * 2))
+                surf = pygame.transform.smoothscale(pygame.transform.smoothscale(surf, (r // 2, r // 2)), (r * 2, r * 2))
+                surf.blit(self._fall[r], (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+                self._rays[key] = surf
+            else:
+                surf = self.rays(r, phase, len(RAY_LEVELS) - 1).copy()
+                v = int(255 * RAY_LEVELS[level])
+                surf.fill((v, v, v), special_flags=pygame.BLEND_RGB_MULT)
+                self._rays[key] = surf
+        return self._rays[key]
+
+
 class Lighting:
     def __init__(self, size, scale=0.5):
         """size: pixel size of the map area the overlay covers. scale 0.5 is the
@@ -105,6 +145,10 @@ class Lighting:
                 self.cache.punch(r, SIGHT_STRENGTH, self.scale)
             for level in GLOW_LEVELS:
                 self.cache.glow(r, level)
+        for r in range(6 * RAY_BUCKET, int(light_max) + RAY_BUCKET, RAY_BUCKET):   # flares only reach 150 and up
+            for phase in (0, 1):
+                for level in range(len(RAY_LEVELS)):
+                    self.cache.rays(r, phase, level)
 
     # ---- time of day ----
     def set_time_of_day(self, tod, sight_scale):
@@ -159,3 +203,17 @@ class Lighting:
                 if lt.glow:
                     g = self.cache.glow(lt.radius, level)
                     screen.blit(g, (lt.x - g.get_width() / 2, lt.y - g.get_height() / 2))
+
+    def render_shafts(self, screen, shafts, time):
+        """Volumetric light shafts, drawn additively after the darkness so they glow.
+        shafts: [(x, y, radius)] for each lamp. Faint at dusk and dawn, full at night."""
+        gain = (self.alpha - 40) / 138
+        if gain <= 0.1:
+            return
+        base = 2 if gain > 0.75 else 1 if gain > 0.35 else 0
+        for i, (x, y, radius) in enumerate(shafts):
+            flick = math.sin(time * 6.0 + i * 1.7) + 0.6 * math.sin(time * 15.0 + i)
+            level = max(0, min(len(RAY_LEVELS) - 1, base + (1 if flick > 1.0 else 0) - (1 if flick < -1.0 else 0)))
+            phase = int(time * 2.2 + i) % 2
+            spr = self.cache.rays(radius, phase, level)
+            screen.blit(spr, (x - spr.get_width() / 2, y - spr.get_height() / 2), special_flags=pygame.BLEND_RGB_ADD)

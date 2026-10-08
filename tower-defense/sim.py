@@ -145,18 +145,22 @@ class Bullet:
         self.damage = damage
         self.speed = speed
         self.hits = hits  # decided at the muzzle; a miss still flies to the target
+        self.heading = 0.0
         self.done = False
 
-    def update(self, dt):
+    def update(self, dt, game=None):
         if not self.enemy.alive:
             self.done = True
             return
         dx, dy = self.enemy.x - self.x, self.enemy.y - self.y
         dist = math.hypot(dx, dy)
+        self.heading = math.atan2(dy, dx)
         step = self.speed * dt
         if dist <= step:
             if self.hits:
                 self.enemy.hp -= self.damage
+            if game is not None:
+                game.events.append(("hit" if self.hits else "miss", self.enemy.x, self.enemy.y, self.heading))
             self.done = True
         else:
             self.x += dx / dist * step
@@ -178,6 +182,7 @@ class Shell:
         self.x, self.y = x, y
         self.tx, self.ty = tx, ty
         self.damage, self.speed, self.radius = damage, speed, radius
+        self.sx, self.sy = x, y   # where it was fired from, for drawing the arc
         self.done = False
 
     def update(self, dt, game):
@@ -245,7 +250,8 @@ class Tower:
             self._lob(game, c.x, c.y, scatter)
         else:
             return
-        game.events.append(("muzzle", self.x, self.y, 0))
+        # radius carries the aim angle so the renderer can place the flash at the barrel tip
+        game.events.append(("mortar_fire" if d.splash_radius else "muzzle", self.x, self.y, self.aim))
         self.cooldown = d.cooldown
 
     def _lob(self, game, tx, ty, scatter):
@@ -437,7 +443,7 @@ class Game:
         for t in self.towers.values():
             t.update(dt, self)
         for b in self.bullets:
-            b.update(dt)
+            b.update(dt, self)
         for sh in self.shells:
             sh.update(dt, self)
         for e in self.enemies:
