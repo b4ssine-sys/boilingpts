@@ -1,0 +1,45 @@
+{
+  "_readme": "Every line the player can read lives here. Edit text freely; keep the {placeholders}. kind is ui or narrative. Narrative entries stay status=draft until the consultant signs off, then set status=approved and fill reviewed_by.",
+  "strings": {
+    "hud.status": {
+      "text": "Supply Points {supply}   Base Integrity {integrity}   Wave {wave}/{total}   {tower} {cost}{hint}",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "hud.hint_next_wave": {
+      "text": "  [SPACE: next wave]",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "tower.mg_nest.name": {
+      "text": "Machine gun nest",
+      "kind": "ui",
+      "status": "draft"
+    },
+    "end.won.title": {
+      "text": "Position held",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "end.won.body": {
+      "text": "All scheduled waves were repelled.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "end.lost.title": {
+      "text": "Position lost",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "end.lost.body": {
+      "text": "Base integrity reached zero.",
+      "kind": "narrative",
+      "status": "draft"
+    },
+    "end.restart": {
+      "text": "Press R to restart",
+      "kind": "ui",
+      "status": "draft"
+    }
+  }
+}
